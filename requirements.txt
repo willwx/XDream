@@ -1,0 +1,4 @@
+numpy
+caffe
+h5py
+opencv-python
