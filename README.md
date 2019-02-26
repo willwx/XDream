@@ -1,3 +1,5 @@
+Preprint available at https://www.biorxiv.org/content/10.1101/516484v1
+
 ## Introduction
 XDream (E**x**tending **D**eepDream with **r**eal-time **e**volution
 for **a**ctivity **m**aximization in real neurons)
