@@ -10,7 +10,7 @@ the visual cortex—through activation maximization.
 Well-known network visualization techniques such as DeepDream
 depend on the objective function being differentiable down to
 the input pixels. In cases such as the visual cortext in the brain,
-such gradients are unavailable.
+these gradients are unavailable.
 
 However, visualization without gradients can be framed as a
 black-box optimization problem. Such a problem can be approached
@@ -44,13 +44,47 @@ image parameterization (e.g.,
 
 ![OptimizerScorer](./illustrations/GenOpt.png)
 
+## Prerequisites
+- The [caffe](http://caffe.berkeleyvision.org) library. On 
+    ubuntu \> 17.04, it can be
+    [installed easily](http://caffe.berkeleyvision.org/install_apt.html)
+    with
+    > sudo apt install caffe-cpu
+    
+    for CPU-only version, or
+    > sudo apt install caffe-cuda
+    
+    for CUDA version.
 
-## To Use
-Download pretrained generative networks (see next section)
-and save them to the paths as defined in `net_catalogue.py`.
-Copy `local_settings.example.py` to `local_settings.py`
-and modify the contents to match your system.
+- `local_settings.py`. Copy it from `local_settings.example.py` and 
+    modify the contents to match your system.
 
+- Pretrained generative networks. The DeepSiM generators can be
+    downloaded from here:
+    https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html.
+
+    To use them here, please
+    - Save the `.prototxt` and `.caffemodel` files
+        to the paths as defined in `net_catalogue.py`
+    - Modify the prototxt files to use batch size of 1
+        (i.e., modify the first dimension of `input_shape`)
+    - Change all `engine: CUDNN` entries to `engine: CAFFE` in
+        the prototxt files, if applicable. Otherwise,
+        you may get errors when running in CPU-only mode
+    - Check layer names in `net_catalogue.py`;
+        make sure they match the prototxt
+
+- (For the demo) The reference caffenet model. It can be found
+    [here](https://github.com/BVLC/caffe/tree/master/models/bvlc_reference_caffenet).
+    Please save the model files to the paths as defined in
+    `net_catalogue.py`. Other caffe vision models can also be used. 
+
+
+## Demo
+Run 
+> python experiment_CNN.py
+
+## To extend
 Experiment modules
 (`EphysExperiment` & `CNNExperiment` in `Experiments.py`)
 and scripts (`experiment.py` & `experiment_CNN.py`) are included
@@ -66,18 +100,3 @@ Some additional tools are included for creating
 the initial generation of codes (for genetic algorithm) and
 empirically optimizing hyperparameters.
 
-
-## Pretrained networks
-- The DeepSiM generators can be found here:
-https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html.
-
-    To use them here, please
-    - Modify the prototxt files to use batch size of 1
-    (i.e., modify the first dimension of `input_shape`)
-    - Change all `engine: CUDNN` entries to `engine: CAFFE`,
-    if applicable
-    - Edit layer names in `net_catalogue.py` to match the prototxt 
-- To run simulated experiments with CNN models,
-the reference caffenet model is needed and can be found here
-https://github.com/BVLC/caffe/tree/master/models/bvlc_reference_caffenet.
-Other caffe networks can be easily used as well. 

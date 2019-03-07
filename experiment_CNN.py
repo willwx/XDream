@@ -7,12 +7,12 @@ from Experiments import CNNExperiment
 
 
 # some arbitrary targets
-target_neurons = (('caffenet', 'fc8', 1), ('caffenet', 'fc8', 407), ('caffenet', 'fc8', 632),
+target_neurons = (('caffenet', 'fc8', 1),    # ('caffenet', 'fc8', 407), ('caffenet', 'fc8', 632),
                   # ('placesCNN', 'fc8', 55), ('placesCNN', 'fc8', 74), ('placesCNN', 'fc8', 162),
                   # ('googlenet', 'loss3/classifier', 1), ('googlenet', 'loss3/classifier', 407),
                   # ('resnet-152', 'fc1000', 1), ('resnet-152', 'fc1000', 407),
                   )
-project_root_dir = 'temp_exp'    # to be changed; dir for writing experiment data & logs
+project_root_dir = 'demo'    # to be changed; dir for writing experiment data & logs
 generator_name = 'deepsim-fc6'
 exp_settings = {
     'optimizer_name': 'genetic',
@@ -25,8 +25,8 @@ exp_settings = {
         'heritability': 0.5,
         'n_conserve': 0,
     },
-    'with_write': False,
-    'image_size': 64,
+    'with_write': True,
+    'image_size': 128,
     'max_images': 1000,
     'random_seed': 0,
     'stochastic': False,
