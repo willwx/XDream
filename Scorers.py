@@ -91,7 +91,7 @@ class BlockWriter:
         """
         Move all image files (with '.bmp' extension) in write_dir to cleanup_dir if it is not None, else remove them
         """
-        for image_fn in [fn for fn in os.listdir(self._writedir) if os.path.splitext(fn) == '.bmp']:
+        for image_fn in [fn for fn in os.listdir(self._writedir) if os.path.splitext(fn)[-1] == '.bmp']:
             try:
                 if self._cleanupdir is None:
                     os.remove(os.path.join(self._writedir, image_fn))
