@@ -46,8 +46,8 @@ image parameterization (e.g.,
 
 ## Prerequisites
 - The [caffe](http://caffe.berkeleyvision.org) library. On 
-    ubuntu \> 17.04, it can be
-    [installed easily](http://caffe.berkeleyvision.org/install_apt.html)
+    ubuntu \> 17.04, it can be easily
+    [installed](http://caffe.berkeleyvision.org/install_apt.html)
     with
     > sudo apt install caffe-cpu
     
@@ -62,17 +62,16 @@ image parameterization (e.g.,
 - Pretrained generative networks. The DeepSiM generators can be
     downloaded from here:
     https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html.
-
-    To use them here, please
-    - Save the `.prototxt` and `.caffemodel` files
-        to the paths as defined in `net_catalogue.py`
-    - Modify the prototxt files to use batch size of 1
-        (i.e., modify the first dimension of `input_shape`)
-    - Change all `engine: CUDNN` entries to `engine: CAFFE` in
-        the prototxt files, if applicable. Otherwise,
-        you may get errors when running in CPU-only mode
-    - Check layer names in `net_catalogue.py`;
-        make sure they match the prototxt
+    
+  Please save the downloaded `.caffemodel` files
+    together with the `.prototxt` files from the prototxt folder
+    to the paths defined in `net_catalogue.py`. The prototxt files
+    included here are modified from the original to
+    - Set batch size to 1
+    - Change `engine: CUDNN` entries to `engine: CAFFE`
+        to prevent errors when running in CPU-only mode
+    - Change `"Eltwise"` layers to `"Power"` layers since the former
+        seems to be deprecated for scalar multiplication 
 
 - (For the demo) The reference caffenet model. It can be found
     [here](https://github.com/BVLC/caffe/tree/master/models/bvlc_reference_caffenet).
