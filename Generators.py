@@ -2,8 +2,6 @@ import numpy as np
 import net_catalogue
 from utils import resize_image
 
-defined_generators = list(net_catalogue.defined_generators) + ['raw_pixel']
-
 
 class Generator:
     def __init__(self, digitize_image, load_on_init):
@@ -50,10 +48,12 @@ class Generator:
 
 
 class NNGenerator(Generator):
-    def __init__(self, gnn_name, digitize_image=True, load_on_init=True, fresh_copy=False):
+    def __init__(self, gnn_name, digitize_image=True, load_on_init=True, fresh_copy=False, engine='caffe'):
         self._gnn_name = gnn_name
         self._fresh_copy = bool(fresh_copy)
         self._GNN = None
+        self._engine = engine
+        self._dtype = None
         self._detransformer = None
         self._input_layer_name = net_catalogue.net_io_layers[gnn_name]['input_layer_name']
         self._output_layer_name = net_catalogue.net_io_layers[gnn_name]['output_layer_name']
@@ -65,17 +65,24 @@ class NNGenerator(Generator):
     def load_generator(self):
         if self._GNN is None:
             import net_loader
-            generator = net_loader.load(self._gnn_name, self._fresh_copy)
-            detransformer = net_loader.get_transformer(self._gnn_name, outputs_image=True)
-            self._GNN = generator
-            self._detransformer = detransformer
+            self._GNN, self._engine = net_loader.load(self._gnn_name, self._engine, self._fresh_copy)
+            self._detransformer = net_loader.get_transformer(self._gnn_name, outputs_image=True)
+            if self._engine == 'caffe':
+                self._dtype = self._GNN.blobs[self._input_layer_name].data.dtype
+            elif self._engine == 'pytorch':
+                self._dtype = self._GNN.parameters().__iter__().__next__().detach().numpy().dtype
 
     def visualize(self, code):
         if self._GNN is None:
             raise RuntimeError('please load generator first')
 
         code = code.reshape(self._input_layer_shape)
-        x = self._GNN.forward(**{self._input_layer_name: code})[self._output_layer_name]
+        if self._engine == 'caffe':
+            x = self._GNN.forward(**{self._input_layer_name: code})[self._output_layer_name]
+        elif self._engine == 'pytorch':
+            x = self._GNN.forward(code).detach().cpu().numpy()
+        else:
+            raise NotImplemented
         x = self._detransformer.deprocess('data', x)
         x = np.clip(x, 0, 1) * 255
         # x = x[14:241, 14:241, :]
@@ -133,8 +140,8 @@ class NNGenerator(Generator):
 
     @property
     def dtype(self):
-        # caffe models use single-precision float
-        return self._GNN.blobs[self._input_layer_name].data.dtype
+        # most models use single-precision float
+        return self._dtype
 
 
 class RawPixGenerator(Generator):
@@ -197,7 +204,6 @@ class RawPixGenerator(Generator):
 
 
 def get_generator(generator_name, *args, **kwargs):
-    assert generator_name in defined_generators
     if generator_name == 'raw_pixel':
         return RawPixGenerator(*args, **kwargs)
     else:

@@ -40,6 +40,7 @@ class NoIOCNNScorer(Scorer):
             self._target_neuron = (self._classifier_name, self._net_layer, self._net_iunit)
 
         self._classifier = None
+        self._engine = None
         self._transformer = None
 
         if image_size is None:
@@ -80,10 +81,10 @@ class NoIOCNNScorer(Scorer):
         """
         Load the underlying neural network
         """
-        classifier = net_loader.load(self._classifier_name)
-        transformer = net_loader.get_transformer(self._classifier_name)
-        self._classifier = classifier
-        self._transformer = transformer
+        self._classifier, self._engine = net_loader.load(self._classifier_name)
+        if self._engine != 'caffe':
+            raise NotImplemented(f'CNNScorer for engine {self._engine} is not currently supported')
+        self._transformer = net_loader.get_transformer(self._classifier_name)
 
     def _score_image_by_CNN(self, im):
         """

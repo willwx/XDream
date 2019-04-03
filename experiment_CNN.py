@@ -24,6 +24,7 @@ exp_settings = {
         'selectivity': 2,
         'heritability': 0.5,
         'n_conserve': 0,
+        # 'generator_parameters': {'engine': 'pytorch'}
     },
     'with_write': True,
     'image_size': 128,

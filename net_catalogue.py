@@ -8,24 +8,33 @@ import os
 from local_settings import nets_dir
 
 
-net_paths = {'caffenet':      {'definition': os.path.join(nets_dir, 'caffenet', 'caffenet.prototxt'),
-                               'weights':    os.path.join(nets_dir, 'caffenet', 'bvlc_reference_caffenet.caffemodel')},
-             'deepsim-norm1': {'definition': os.path.join(nets_dir, 'deepsim', 'norm1', 'generator_no_batch.prototxt'),
-                               'weights':    os.path.join(nets_dir, 'deepsim', 'norm1', 'generator.caffemodel')},
-             'deepsim-norm2': {'definition': os.path.join(nets_dir, 'deepsim', 'norm2', 'generator_no_batch.prototxt'),
-                               'weights':    os.path.join(nets_dir, 'deepsim', 'norm2', 'generator.caffemodel')},
-             'deepsim-conv3': {'definition': os.path.join(nets_dir, 'deepsim', 'conv3', 'generator_no_batch.prototxt'),
-                               'weights':    os.path.join(nets_dir, 'deepsim', 'conv3', 'generator.caffemodel')},
-             'deepsim-conv4': {'definition': os.path.join(nets_dir, 'deepsim', 'conv4', 'generator_no_batch.prototxt'),
-                               'weights':    os.path.join(nets_dir, 'deepsim', 'conv4', 'generator.caffemodel')},
-             'deepsim-pool5': {'definition': os.path.join(nets_dir, 'deepsim', 'pool5', 'generator_no_batch.prototxt'),
-                               'weights':    os.path.join(nets_dir, 'deepsim', 'pool5', 'generator.caffemodel')},
-             'deepsim-fc6':   {'definition': os.path.join(nets_dir, 'deepsim', 'fc6', 'generator_no_batch.prototxt'),
-                               'weights':    os.path.join(nets_dir, 'deepsim', 'fc6', 'generator.caffemodel')},
-             'deepsim-fc7':   {'definition': os.path.join(nets_dir, 'deepsim', 'fc7', 'generator_no_batch.prototxt'),
-                               'weights':    os.path.join(nets_dir, 'deepsim', 'fc7', 'generator.caffemodel')},
-             'deepsim-fc8':   {'definition': os.path.join(nets_dir, 'deepsim', 'fc8', 'generator_no_batch.prototxt'),
-                               'weights':    os.path.join(nets_dir, 'deepsim', 'fc8', 'generator.caffemodel')}}
+defined_engines = ('caffe', 'pytorch')
+
+net_paths = {
+    'caffe': {
+        'caffenet':      {'definition': os.path.join(nets_dir, 'caffenet', 'caffenet.prototxt'),
+                          'weights':    os.path.join(nets_dir, 'caffenet', 'bvlc_reference_caffenet.caffemodel')},
+        'deepsim-norm1': {'definition': os.path.join(nets_dir, 'deepsim', 'norm1', 'generator_no_batch.prototxt'),
+                          'weights':    os.path.join(nets_dir, 'deepsim', 'norm1', 'generator.caffemodel')},
+        'deepsim-norm2': {'definition': os.path.join(nets_dir, 'deepsim', 'norm2', 'generator_no_batch.prototxt'),
+                          'weights':    os.path.join(nets_dir, 'deepsim', 'norm2', 'generator.caffemodel')},
+        'deepsim-conv3': {'definition': os.path.join(nets_dir, 'deepsim', 'conv3', 'generator_no_batch.prototxt'),
+                          'weights':    os.path.join(nets_dir, 'deepsim', 'conv3', 'generator.caffemodel')},
+        'deepsim-conv4': {'definition': os.path.join(nets_dir, 'deepsim', 'conv4', 'generator_no_batch.prototxt'),
+                          'weights':    os.path.join(nets_dir, 'deepsim', 'conv4', 'generator.caffemodel')},
+        'deepsim-pool5': {'definition': os.path.join(nets_dir, 'deepsim', 'pool5', 'generator_no_batch.prototxt'),
+                          'weights':    os.path.join(nets_dir, 'deepsim', 'pool5', 'generator.caffemodel')},
+        'deepsim-fc6':   {'definition': os.path.join(nets_dir, 'deepsim', 'fc6', 'generator_no_batch.prototxt'),
+                          'weights':    os.path.join(nets_dir, 'deepsim', 'fc6', 'generator.caffemodel')},
+        'deepsim-fc7':   {'definition': os.path.join(nets_dir, 'deepsim', 'fc7', 'generator_no_batch.prototxt'),
+                          'weights':    os.path.join(nets_dir, 'deepsim', 'fc7', 'generator.caffemodel')},
+        'deepsim-fc8':   {'definition': os.path.join(nets_dir, 'deepsim', 'fc8', 'generator_no_batch.prototxt'),
+                          'weights':    os.path.join(nets_dir, 'deepsim', 'fc8', 'generator.caffemodel')}
+    },
+    'pytorch': {
+        'deepsim-fc6': {'weights': os.path.join(nets_dir, 'pytorch', 'deepsim', 'fc6.pt')}
+    }
+}
 
 net_io_layers = {'caffenet':      {'input_layer_name':   'data',
                                    'input_layer_shape':  (3, 227, 227,),   # shape is without the first, batch dimension
@@ -70,13 +79,30 @@ all_generators = ('deepsim-norm1', 'deepsim-norm2', 'deepsim-conv3', 'deepsim-co
                   'deepsim-pool5', 'deepsim-fc6', 'deepsim-fc7', 'deepsim-fc8')
 
 
-defined_classifiers = \
-    tuple([n for n, p in net_paths.items()
-           if os.path.isfile(p['definition']) and os.path.isfile(p['weights']) and n in all_classifiers])
-defined_generators = \
-    tuple([n for n, p in net_paths.items()
-           if os.path.isfile(p['definition']) and os.path.isfile(p['weights']) and n in all_generators])
-defined_nets = tuple(list(defined_classifiers) + list(defined_generators))
+defined_classifiers = {
+    engine: tuple(
+        n for n, p in net_paths[engine].items()
+        if (
+            n in all_classifiers
+            and os.path.isfile(p['weights'])
+            and ('definition' not in p or os.path.isfile(p['definition']))
+        )
+    ) for engine in defined_engines
+}
+defined_generators = {
+    engine: tuple(
+        n for n, p in net_paths[engine].items()
+        if (
+            n in all_generators
+            and os.path.isfile(p['weights'])
+            and ('definition' not in p or os.path.isfile(p['definition']))
+        )
+    ) for engine in defined_engines
+}
+defined_nets = {
+    engine: tuple(list(defined_classifiers.get(engine, [])) + list(defined_generators.get(engine, [])))
+    for engine in defined_engines
+}
 
 
 # whether raw input to net is on the scale of 0-255 (before subtracting mean)

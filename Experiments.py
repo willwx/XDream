@@ -61,7 +61,7 @@ class ExperimentBase:
                 optimizer_parameters['random_seed'] = random_seed
             optimizer_parameterss = [{} for _ in range(nthreads)]
             for k, param in optimizer_parameters.items():
-                if isinstance(param, str) or not hasattr(param, '__len__'):
+                if isinstance(param, str) or isinstance(param, dict) or not hasattr(param, '__len__'):
                     for t in range(nthreads):
                         optimizer_parameterss[t][k] = param
                 else:

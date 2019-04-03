@@ -27,8 +27,6 @@ class Optimizer:
             default is to assume no concurrent threads
         :param generator_parameters: dict, kwargs passed when initializing the generator
         """
-        assert generator_name in Generators.defined_generators,\
-            'generator %s is not defined in net_catalogue' % generator_name
         if thread is not None:
             assert isinstance(thread, int), 'thread must be an integer'
         assert os.path.isdir(log_dir)

@@ -1,5 +1,8 @@
 Preprint available at https://www.biorxiv.org/content/10.1101/516484v1
 
+Update (19/4/3): Added rudimentary support for PyTorch.
+    See below for details.
+
 ## Introduction
 XDream (E**x**tending **D**eepDream with **r**eal-time **e**volution
 for **a**ctivity **m**aximization in real neurons)
@@ -45,8 +48,10 @@ image parameterization (e.g.,
 ![OptimizerScorer](./illustrations/GenOpt.png)
 
 ## Prerequisites
-- The [caffe](http://caffe.berkeleyvision.org) library. On 
-    ubuntu \> 17.04, it can be easily
+- The [caffe](http://caffe.berkeleyvision.org) or
+    the [PyTorch](http://pytorch.org) library.
+    
+    On ubuntu \> 17.04, caffe can be easily
     [installed](http://caffe.berkeleyvision.org/install_apt.html)
     with
     > sudo apt install caffe-cpu
@@ -55,33 +60,45 @@ image parameterization (e.g.,
     > sudo apt install caffe-cuda
     
     for CUDA version.
+    
+    For PyTorch, please visit the official website for
+    installation instructions.
 
 - `local_settings.py`. Copy it from `local_settings.example.py` and 
     modify the contents to match your system.
 
-- Pretrained generative networks. The DeepSiM generators can be
-    downloaded from here:
-    https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html.
-    
-  Please save the downloaded `.caffemodel` files
-    together with the `.prototxt` files from the prototxt folder
-    to the paths defined in `net_catalogue.py`. The prototxt files
-    included here are modified from the original to
+- Pretrained generative networks.
+    Weights for the DeepSiM generators for caffe can be downloaded from
+    [here](https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html).
+    The prototxt files are included in the prototxt folder. They are
+    modified from the original to
     - Set batch size to 1
     - Change `engine: CUDNN` entries to `engine: CAFFE`
         to prevent errors when running in CPU-only mode
     - Change `"Eltwise"` layers to `"Power"` layers since the former
         seems to be deprecated for scalar multiplication 
+    
+    We are in the process of converting the caffe models into PyTorch.
+    Currently, the deepsim-fc6 model is available.
+    The models will be defined in `tf_nets.py`. The weights will be available
+    [here](https://drive.google.com/open?id=1sV54kv5VXvtx4om1c9kBPbdlNuurkGFi).
+   
+  Please save the downloaded `.caffemodel`, `.prototxt`, and/or
+   `.pt` files to the paths defined in `net_catalogue.py`.
+   
 
 - (For the demo) The reference caffenet model. It can be found
     [here](https://github.com/BVLC/caffe/tree/master/models/bvlc_reference_caffenet).
-    Please save the model files to the paths as defined in
-    `net_catalogue.py`. Other caffe vision models can also be used. 
+    Please save the model files to the paths defined in
+    `net_catalogue.py`. Other vision models can also be used.
 
 
 ## Demo
-Run 
+Run
 > python experiment_CNN.py
+
+The demo currently requires caffe.
+
 
 ## To extend
 Experiment modules
