@@ -474,8 +474,11 @@ class EphysExperiment(ExperimentBase):
                     syn_sections.append(syn_nimgs)
                     syn_images += optimizer.current_images
                     syn_image_ids += optimizer.current_image_ids
-                combined_scores = self.scorer.score(syn_images + self.natural_stimuli,
-                                                    syn_image_ids + self.natural_stimuli_ids)
+                if self.natural_stimuli is not None:
+                    combined_scores = \
+                        self.scorer.score(syn_images + self.natural_stimuli, syn_image_ids + self.natural_stimuli_ids)
+                else:
+                    combined_scores = self.scorer.score(syn_images, syn_image_ids)
                 t1 = time()
 
                 # after scoring, backup scores (scorer)

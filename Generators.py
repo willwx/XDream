@@ -70,7 +70,7 @@ class NNGenerator(Generator):
             if self._engine == 'caffe':
                 self._dtype = self._GNN.blobs[self._input_layer_name].data.dtype
             elif self._engine == 'pytorch':
-                self._dtype = self._GNN.parameters().__iter__().__next__().detach().numpy().dtype
+                self._dtype = self._GNN.parameters().__iter__().__next__().cpu().detach().numpy().dtype
 
     def visualize(self, code):
         if self._GNN is None:

@@ -1,24 +1,25 @@
 import os
+import numpy as np
 try:
     import caffe
-    caffe_avail = True
+    caffe_available = True
 except ImportError:
-    caffe_avail = False
+    caffe_available = False
 try:
     import torch
     import torch_nets
-    torch_avail = True
+    torch_available = True
 except ImportError:
-    torch_avail = False
-import numpy as np
+    torch_available = False
 import net_catalogue
 from local_settings import gpu_available
+from caffe_transformer import Transformer
 
-if not (caffe_avail or torch_avail):
+if not (caffe_available or torch_available):
     raise ImportError('Both caffe and pytorch are missing! Please install either library')
 
 
-if gpu_available:
+if caffe_available and gpu_available:
     caffe.set_mode_gpu()
 
 ilsvrc2012_mean = np.array((104.0, 117.0, 123.0))  # ImageNet Mean in BGR order
@@ -37,33 +38,35 @@ def get_paths(net_name, engine):
 
 
 def load(net_name, engine=None, fresh_copy=False):
-    if not fresh_copy and net_name in loaded_nets.keys():
-        return loaded_nets[net_name]    # in general, do not load the same net multiple times
+    if not fresh_copy:
+        try:        # in general, do not load the same net multiple times
+            return loaded_nets[(net_name, engine)], engine
+        except KeyError:
+            pass
+    if engine is None:
+        engine = 'caffe' if caffe_available else 'pytorch'
     else:
-        if engine is None:
-            engine = 'caffe' if caffe_avail else 'pytorch'
+        assert engine in net_catalogue.defined_engines, f'engine {engine} not defined in net_catalogue'
+    if engine == 'caffe':
+        assert caffe_available
+        net_def, net_weights = get_paths(net_name, 'caffe')
+        if os.name == 'nt':
+            net = caffe.Net(net_def, caffe.TEST)
+            net.copy_from(net_weights)
         else:
-            assert engine in net_catalogue.defined_engines, f'engine {engine} not defined in net_catalogue'
-        if engine == 'caffe':
-            assert caffe_avail
-            net_def, net_weights = get_paths(net_name, 'caffe')
-            if os.name == 'nt':
-                net = caffe.Net(net_def, caffe.TEST)
-                net.copy_from(net_weights)
-            else:
-                net = caffe.Net(net_def, caffe.TEST, weights=net_weights)
-        elif engine == 'pytorch':
-            assert torch_avail
-            net = torch_nets.load_net(net_name)
-            _, net_weights = get_paths(net_name, 'pytorch')
-            net.load_state_dict(torch.load(net_weights))
-            if gpu_available:
-                net.to('cuda')
-        else:
-            raise NotImplemented
-        if not fresh_copy:
-            loaded_nets[net_name] = net
-        return net, engine
+            net = caffe.Net(net_def, caffe.TEST, weights=net_weights)
+    elif engine == 'pytorch':
+        assert torch_available
+        net = torch_nets.load_net(net_name)
+        _, net_weights = get_paths(net_name, 'pytorch')
+        net.load_state_dict(torch.load(net_weights))
+        if gpu_available:
+            net.to('cuda')
+    else:
+        raise NotImplemented
+    if not fresh_copy:
+        loaded_nets[(net_name, engine)] = net
+    return net, engine
 
 
 def get_transformer(net_name, scale=None, outputs_image=False):
@@ -73,9 +76,9 @@ def get_transformer(net_name, scale=None, outputs_image=False):
         except KeyError:
             scale = 255
     if outputs_image:    # True if is a generator
-        transformer = caffe.io.Transformer({'data': (1, *net_catalogue.net_io_layers[net_name]['output_layer_shape'])})
+        transformer = Transformer({'data': (1, *net_catalogue.net_io_layers[net_name]['output_layer_shape'])})
     else:
-        transformer = caffe.io.Transformer({'data': (1, *net_catalogue.net_io_layers[net_name]['input_layer_shape'])})
+        transformer = Transformer({'data': (1, *net_catalogue.net_io_layers[net_name]['input_layer_shape'])})
     transformer.set_transpose('data', (2, 0, 1))       # move color channels to outermost dimension
     transformer.set_raw_scale('data', scale)           # should be set if pixel values are in [0, scale], not [0, 1]
     transformer.set_mean('data', ilsvrc2012_mean / (255 / scale))    # subtract the dataset-mean value in each channel

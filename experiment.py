@@ -13,8 +13,8 @@ from Experiments import EphysExperiment
 
 # set file directories for I/O
 initcode_dir = None
-natural_stimuli_dir = 'temp_ims'  # to be changed; dir containing control images to be shown along with generated ims
-project_dir = 'temp_exp'          # to be changed; dir for writing experiment data & logs
+natural_stimuli_dir = None    # to be changed; dir containing control images to be shown along with generated ims
+project_dir = 'demo'          # to be changed; dir for writing experiment data & logs
 
 
 # set parameters
