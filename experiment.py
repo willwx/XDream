@@ -30,7 +30,8 @@ random_seed = 0                   # seed for all random generators used in the e
 
 optimizer_name = 'genetic'
 optimizer_parameters =\
-    {'generator_name': 'deepsim-fc6',    # see net_catalogue for available options
+    {'generator_name': 'deepsim-fc6',                        # see net_catalogue for available options
+     # 'generator_parameters': {'engine': 'pytorch'},        # see Generators.py for available options
      'initial_codes_dir': initcode_dir,
      'population_size': 20,       # size of population each generation
      'mutation_rate': 0.5,        # fraction of code elements to mutate(on average); range 0 - 1
