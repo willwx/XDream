@@ -157,7 +157,7 @@ class BlockWriter:
             try:
                 shutil.copyfile(os.path.join(self._writedir, imgfn), os.path.join(self._backupdir, imgfn))
             except OSError:
-                print('%s: failed to backup_images %s' % (self.__class__.__name__, imgfn))
+                print('%s: failed to backup image %s' % (self.__class__.__name__, imgfn))
 
     def show_again(self, imgids):
         """
@@ -294,7 +294,7 @@ class WithIOScorer(Scorer):
             # report delays
             if self._verbose:
                 print(('block %03d time: total %.2fs | ' +
-                       'write images %.2fs  backup_images images %.2fs  ' +
+                       'write images %.2fs  backup images %.2fs  ' +
                        'wait for results %.2fs  clean up images %.2fs  (loop %d)') %
                       (blockwriter.iblock, t4 - t0, t1 - t0, t2 - t1, t3 - t2, t4 - t3, blockwriter.iloop))
                 if len(novel_imgfns) > 0:
