@@ -68,23 +68,17 @@ image parameterization (e.g.,
     modify the contents to match your system.
 
 - Pretrained generative networks.
-    Weights for the DeepSiM generators for caffe can be downloaded from
-    [here](https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html).
-    The prototxt files are included in the prototxt folder. They are
-    modified from the original to
-    - Set batch size to 1
-    - Change `engine: CUDNN` entries to `engine: CAFFE`
-        to prevent errors when running in CPU-only mode
-    - Change `"Eltwise"` layers to `"Power"` layers since the former
-        seems to be deprecated for scalar multiplication 
+    The DeepSiM generators can be downloaded from
+    [here](https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html)
+    (caffe version). The prototxt files (slightly modified from original) are included
+    in the prototxt folder.
     
-    We are in the process of converting the caffe models into PyTorch.
-    Currently, the deepsim-fc6 model is available.
-    The models will be defined in `tf_nets.py`. The weights will be available
+    The caffe models have been converted into PyTorch.
+    They are defined in `tf_nets.py`, and the weights are available
     [here](https://drive.google.com/open?id=1sV54kv5VXvtx4om1c9kBPbdlNuurkGFi).
    
-  Please save the downloaded `.caffemodel`, `.prototxt`, and/or
-   `.pt` files to the paths defined in `net_catalogue.py`.
+  Please make sure the paths defined in `net_catalogue.py` match
+   the downloaded `.caffemodel`, `.prototxt`, and/or `.pt` files. 
    
 
 - (For the demo) The reference caffenet model. It can be found
