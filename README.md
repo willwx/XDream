@@ -63,6 +63,17 @@ image parameterization (e.g.,
     
     for CUDA version.
     
+    Caffe can also be installed on Windows using
+    [Anaconda/Minoconda](https://docs.conda.io/en/latest/miniconda.html),
+    with
+    > conda install caffe -c willyd
+    
+    This will install a pre-compiled version of caffe. However, this
+    package seems to depend on some Visual Studio 2015 components.
+    They can be installed with the component 
+    "Programming Languages/Visual C++/Common Tools for Visual C++ 2015"
+    in Visual Studion Community 2015.
+    
     For PyTorch, please visit the official website for
     installation instructions.
 
