@@ -78,8 +78,15 @@ all_classifiers = ('caffenet',)
 all_generators = ('deepsim-norm1', 'deepsim-norm2', 'deepsim-conv3', 'deepsim-conv4',
                   'deepsim-pool5', 'deepsim-fc6', 'deepsim-fc7', 'deepsim-fc8')
 
-
-defined_classifiers = {
+net_paths_exist = {
+    engine: {
+        net_name: {
+            file_name: bool(os.path.exists(net_paths[engine][net_name][file_name]))
+            for file_name in net_paths[engine][net_name].keys()
+        } for net_name in net_paths[engine].keys()
+    } for engine in net_paths.keys()
+}
+available_classifiers = {
     engine: tuple(
         n for n, p in net_paths[engine].items()
         if (
@@ -89,7 +96,7 @@ defined_classifiers = {
         )
     ) for engine in defined_engines
 }
-defined_generators = {
+available_generators = {
     engine: tuple(
         n for n, p in net_paths[engine].items()
         if (
@@ -99,12 +106,12 @@ defined_generators = {
         )
     ) for engine in defined_engines
 }
-defined_nets = {
-    engine: tuple(list(defined_classifiers.get(engine, [])) + list(defined_generators.get(engine, [])))
+available_nets = {
+    engine: tuple(list(available_classifiers.get(engine, [])) + list(available_generators.get(engine, [])))
     for engine in defined_engines
 }
 
 
 # whether raw input to net is on the scale of 0-255 (before subtracting mean)
 # or something else (e.g., inception networks use scale 0-1)
-net_scales = {n: 255 for n in defined_nets}
+net_scales = {n: 255 for n in available_nets}

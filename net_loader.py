@@ -27,8 +27,15 @@ loaded_nets = {}
 
 
 def get_paths(net_name, engine):
-    assert engine in net_catalogue.defined_nets and net_name in net_catalogue.defined_nets[engine], \
-        f'{net_name} (engine: {engine}) not defined in net_catalogue'
+    if engine not in net_catalogue.defined_engines:
+        raise ValueError(f'engine {engine} is not defined in net_catalogue')
+    if net_name not in net_catalogue.net_paths[engine]:
+        raise ValueError(f'{net_name} (engine: {engine}) not defined in net_catalogue')
+    assert net_name in net_catalogue.available_nets[engine], f'{net_name} (engine: {engine}) not available; ' +\
+        '; '.join(
+            f'{file_name} file exists: {net_catalogue.net_paths_exist[engine][net_name][file_name]}'
+            for file_name in net_catalogue.net_paths_exist[engine][net_name]
+        ) + '. Please check paths in net_catalogue.net_paths'
     net_definition = net_catalogue.net_paths[engine][net_name].get('definition', None)
     net_weights = net_catalogue.net_paths[engine][net_name]['weights']
     for p in (net_definition, net_weights):

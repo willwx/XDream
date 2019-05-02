@@ -16,7 +16,7 @@ class Optimizer:
 
     def __init__(self, generator_name, log_dir, random_seed=None, thread=None, generator_parameters=None):
         """
-        :param generator_name: str, see `defined_generators` in `Generators.py`
+        :param generator_name: str, see `all_generators` in `net_catalogue.py`
         :param log_dir: str (path), directory to which to write backup codes & other log files
         :param random_seed: int
             when set, the optimizer will have deterministic behavior,
@@ -177,7 +177,7 @@ class Genetic(Optimizer):
                  heritability=0.5, n_conserve=0, n_conserve_ratio=None, random_seed=None, thread=None,
                  initial_codes_dir=None, save_init=True, generator_parameters=None):
         """
-        :param generator_name: str, see `defined_generators` in `Generators.py`
+        :param generator_name: str, see see `all_generators` in `net_catalogue.py`
         :param log_dir: str (path), directory to which to write backup codes & other log files
         :param population_size: int (>= 1), number of samples per generation
         :param mutation_rate: float (>= 0, <= 1), portion of genes to mutate
@@ -433,7 +433,7 @@ class FDGD(Optimizer):
                  initial_codes_dir=None, save_init=True,
                  generator_parameters=None):
         """
-        :param generator_name: str, see `defined_generators` in `Generators.py`
+        :param generator_name: str, see see `all_generators` in `net_catalogue.py`
         :param log_dir: str (path), directory to which to write backup codes & other log files
         :param n_samples: int (>= 1), number of samples per step; rounded down to an even integer if antithetic == True
         :param search_radius: float (> 0), scale of search around the current center
