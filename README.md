@@ -1,4 +1,5 @@
 Preprint available at https://www.biorxiv.org/content/10.1101/516484v1
+Journal paper available at https://www.cell.com/cell/fulltext/S0092-8674(19)30391-5
 
 Update (19/4/3): Added rudimentary support for PyTorch.
     See below for details.
