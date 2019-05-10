@@ -1,6 +1,10 @@
 from torch import nn
 
 
+__all__ = ['DeePSiMNorm', 'DeePSiMNorm2', 'DeePSiMConv34',
+           'DeePSiMPool5', 'DeePSiMFc', 'DeePSiMFc8']
+
+
 class DeePSiMNorm(nn.Module):
     _layer1_ios = (96, 128, 2)
 
@@ -163,19 +167,3 @@ class DeePSiMFc(nn.Module):
 
 class DeePSiMFc8(DeePSiMFc):
     _num_inputs = 1000
-
-
-get_net = {
-    'deepsim-norm1': DeePSiMNorm,
-    'deepsim-norm2': DeePSiMNorm2,
-    'deepsim-conv3': DeePSiMConv34,
-    'deepsim-conv4': DeePSiMConv34,
-    'deepsim-pool5': DeePSiMPool5,
-    'deepsim-fc6': DeePSiMFc,
-    'deepsim-fc7': DeePSiMFc,
-    'deepsim-fc8': DeePSiMFc8
-}
-
-
-def load_net(net_name):
-    return get_net[net_name]()

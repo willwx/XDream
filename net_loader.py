@@ -22,7 +22,8 @@ if not (caffe_available or torch_available):
 if caffe_available and gpu_available:
     caffe.set_mode_gpu()
 
-ilsvrc2012_mean = np.array((104.0, 117.0, 123.0))  # ImageNet Mean in BGR order
+ilsvrc2012_mean_bgr = np.array((104.0, 117.0, 123.0)) / 255    # ImageNet Mean in BGR order
+ilsvrc2012_mean_rgb_1 = np.array((0.485, 0.456, 0.406))        # RGB; for pytorch models
 loaded_nets = {}
 
 
@@ -50,10 +51,12 @@ def load(net_name, engine=None, fresh_copy=False):
             return loaded_nets[(net_name, engine)], engine
         except KeyError:
             pass
+
     if engine is None:
         engine = 'caffe' if caffe_available else 'pytorch'
     else:
         assert engine in net_catalogue.defined_engines, f'engine {engine} not defined in net_catalogue'
+
     if engine == 'caffe':
         assert caffe_available
         net_def, net_weights = get_paths(net_name, 'caffe')
@@ -66,17 +69,22 @@ def load(net_name, engine=None, fresh_copy=False):
         assert torch_available
         net = torch_nets.load_net(net_name)
         _, net_weights = get_paths(net_name, 'pytorch')
-        net.load_state_dict(torch.load(net_weights))
         if gpu_available:
-            net.to('cuda')
+            net.load_state_dict(torch.load(net_weights, map_location='cuda'))
+        else:
+            net.load_state_dict(torch.load(net_weights, map_location='cpu'))
+        net.eval()
+        if gpu_available:
+            net.cuda()
     else:
-        raise NotImplemented
+        raise NotImplemented(f"net engine '{engine}' is not currently supported")
     if not fresh_copy:
         loaded_nets[(net_name, engine)] = net
+
     return net, engine
 
 
-def get_transformer(net_name, scale=None, outputs_image=False):
+def get_transformer(net_name, net_engine='caffe', scale=None, outputs_image=False):
     if scale is None:
         try:
             scale = net_catalogue.net_scales[net_name]
@@ -88,6 +96,10 @@ def get_transformer(net_name, scale=None, outputs_image=False):
         transformer = Transformer({'data': (1, *net_catalogue.net_io_layers[net_name]['input_layer_shape'])})
     transformer.set_transpose('data', (2, 0, 1))       # move color channels to outermost dimension
     transformer.set_raw_scale('data', scale)           # should be set if pixel values are in [0, scale], not [0, 1]
-    transformer.set_mean('data', ilsvrc2012_mean / (255 / scale))    # subtract the dataset-mean value in each channel
-    transformer.set_channel_swap('data', (2, 1, 0))    # swap channels from RGB to BGR
+    if net_engine == 'caffe' or 'deepsim' in net_name:     # pytorch version of deepsim still uses caffe preprocessing
+        transformer.set_channel_swap('data', (2, 1, 0))    # swap channels from RGB to BGR
+        transformer.set_mean('data',                       # subtract the dataset-mean value in each channel
+                             (ilsvrc2012_mean_bgr.reshape(-1, 1, 1) * scale).flatten())
+    else:
+        transformer.set_mean('data', (ilsvrc2012_mean_rgb_1.reshape(-1, 1, 1) * scale).flatten())
     return transformer

@@ -1,5 +1,6 @@
 import numpy as np
 import net_catalogue
+from local_settings import gpu_available
 from utils import resize_image
 
 
@@ -60,17 +61,25 @@ class NNGenerator(Generator):
         self._code_shape = net_catalogue.net_io_layers[gnn_name]['input_layer_shape']
         self._input_layer_shape = (1, *self._code_shape)    # add batch dimension
 
+        # pytorch specific
+        self._torch_lib = None
+        self._torch_dtype = None
+
         super(NNGenerator, self).__init__(digitize_image=digitize_image, load_on_init=load_on_init)
 
     def load_generator(self):
         if self._GNN is None:
             import net_loader
             self._GNN, self._engine = net_loader.load(self._gnn_name, self._engine, self._fresh_copy)
-            self._detransformer = net_loader.get_transformer(self._gnn_name, outputs_image=True)
+            self._detransformer = net_loader.get_transformer(self._gnn_name, self._engine, outputs_image=True)
             if self._engine == 'caffe':
                 self._dtype = self._GNN.blobs[self._input_layer_name].data.dtype
             elif self._engine == 'pytorch':
-                self._dtype = self._GNN.parameters().__iter__().__next__().cpu().detach().numpy().dtype
+                import torch
+                self._torch_lib = torch
+                p = self._GNN.parameters().__iter__().__next__()
+                self._torch_dtype = p.dtype
+                self._dtype = p.cpu().detach().numpy().dtype
 
     def visualize(self, code):
         if self._GNN is None:
@@ -80,7 +89,11 @@ class NNGenerator(Generator):
         if self._engine == 'caffe':
             x = self._GNN.forward(**{self._input_layer_name: code})[self._output_layer_name]
         elif self._engine == 'pytorch':
-            x = self._GNN.forward(code).detach().cpu().numpy()
+            code = self._torch_lib.tensor(code, dtype=self._torch_dtype)
+            if gpu_available:
+                x = self._GNN.forward(code.cuda()).detach().cpu().numpy()
+            else:
+                x = self._GNN.forward(code).detach().numpy()
         else:
             raise NotImplemented
         x = self._detransformer.deprocess('data', x)

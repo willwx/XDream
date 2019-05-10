@@ -6,6 +6,7 @@ To add a new network, edit `net_paths`, `net_io_layers`, `all_classifiers`/`all_
 
 import os
 from local_settings import nets_dir
+from numpy import array
 
 
 defined_engines = ('caffe', 'pytorch')
@@ -32,7 +33,9 @@ net_paths = {
                           'weights':    os.path.join(nets_dir, 'deepsim', 'fc8', 'generator.caffemodel')}
     },
     'pytorch': {
-        'deepsim-fc6': {'weights': os.path.join(nets_dir, 'pytorch', 'deepsim', 'fc6.pt')}
+        'deepsim-fc6': {'weights': os.path.join(nets_dir, 'pytorch', 'deepsim', 'fc6.pt')},
+        # alexnet: download from https://download.pytorch.org/models/alexnet-owt-4df8aa71.pth
+        'alexnet': {'weights': os.path.join(nets_dir, 'pytorch', 'alexnet', 'alexnet-owt-4df8aa71.pt')}
     }
 }
 
@@ -71,10 +74,13 @@ net_io_layers = {'caffenet':      {'input_layer_name':   'data',
                  'deepsim-fc8':   {'input_layer_name':   'feat',
                                    'input_layer_shape':  (1000,),
                                    'output_layer_name':  'generated',
-                                   'output_layer_shape': (3, 256, 256,)}}
+                                   'output_layer_shape': (3, 256, 256,)},
+                 'alexnet':       {'input_layer_shape': (3, 224, 224,),
+                                   'output_layer_name': 'classifier.6',
+                                   'output_layer_shape': (1000,)}}
 
 
-all_classifiers = ('caffenet',)
+all_classifiers = ('caffenet', 'alexnet')
 all_generators = ('deepsim-norm1', 'deepsim-norm2', 'deepsim-conv3', 'deepsim-conv4',
                   'deepsim-pool5', 'deepsim-fc6', 'deepsim-fc7', 'deepsim-fc8')
 
@@ -115,3 +121,4 @@ available_nets = {
 # whether raw input to net is on the scale of 0-255 (before subtracting mean)
 # or something else (e.g., inception networks use scale 0-1)
 net_scales = {n: 255 for n in available_nets}
+net_scales.update({'alexnet': 1 / array([0.229, 0.224, 0.225]).reshape((-1, 1, 1))})

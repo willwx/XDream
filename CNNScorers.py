@@ -4,18 +4,31 @@ import net_loader
 import utils
 from Scorers import Scorer, WithIOScorer
 
+gpu_available = net_loader.gpu_available
+
+
+class ForwardHook:
+    def __init__(self):
+        self.i = None
+        self.o = None
+
+    def hook(self, module, i, o):
+        self.i = i
+        self.o = o
+
 
 class NoIOCNNScorer(Scorer):
     """
     Scores images using a CNN unit without writing the images to disk
     """
 
-    def __init__(self, log_dir, target_neuron, image_size=None,
+    def __init__(self, log_dir, target_neuron, engine='caffe', image_size=None,
                  stochastic=False, stochastic_random_seed=None, reps=1, **kwargs):
         """
         :param log_dir: str (path), directory to which to backup images and scores
-        :param target_neuron: 5-tuple
+        :param target_neuron: 3- or 5-tuple
             (network_name (str), layer_name (str), unit_index (int) [, x_index (int), y_index (int)])
+        :param engine: 'caffe' or 'pytorch'
         :param image_size: int, size in pixels to which to resize all images; default is to leave unchanged
         :param stochastic: bool, whether to inject random Poisson noise to CNN responses; default is False
         :param stochastic_random_seed: int
@@ -24,6 +37,8 @@ class NoIOCNNScorer(Scorer):
             number of stochastic scores to produce for the same image
             only meaningful if stochastic == True
         """
+        assert engine in ('caffe', 'pytorch'), f'CNNScorer for engine {engine} is not currently supported'
+
         Scorer.__init__(self, log_dir)
 
         self._classifier_name = str(target_neuron[0])
@@ -40,8 +55,13 @@ class NoIOCNNScorer(Scorer):
             self._target_neuron = (self._classifier_name, self._net_layer, self._net_iunit)
 
         self._classifier = None
-        self._engine = None
+        self._engine = str(engine)
         self._transformer = None
+
+        # torch specific
+        self._torch_lib = None
+        self._torch_dtype = None
+        self._fwd_hk = None
 
         if image_size is None:
             self._imsize = None
@@ -79,12 +99,24 @@ class NoIOCNNScorer(Scorer):
 
     def load_classifier(self):
         """
-        Load the underlying neural network
+        Load the underlying neural network; initialize dependent attributes
         """
-        self._classifier, self._engine = net_loader.load(self._classifier_name)
-        if self._engine != 'caffe':
-            raise NotImplemented(f'CNNScorer for engine {self._engine} is not currently supported')
-        self._transformer = net_loader.get_transformer(self._classifier_name)
+        self._classifier = net_loader.load(self._classifier_name, engine=self._engine)[0]
+        self._transformer = net_loader.get_transformer(self._classifier_name, self._engine)
+        if self._engine == 'pytorch':
+            import torch
+            self._torch_lib = torch
+            fwd_hk = ForwardHook()
+            layer_found = False
+            for layer_name, layer in self._classifier.named_modules():
+                if layer_name == self._net_layer:
+                    layer.register_forward_hook(fwd_hk.hook)
+                    layer_found = True
+                    break
+            assert layer_found, f'layer {self._net_layer} not found in pytoch network; ' +\
+                f'available layers: {[l[0] for l in self._classifier.named_modules()]}'
+            self._fwd_hk = fwd_hk
+            self._torch_dtype = self._classifier.parameters().__iter__().__next__().dtype
 
     def _score_image_by_CNN(self, im):
         """
@@ -92,8 +124,18 @@ class NoIOCNNScorer(Scorer):
         :return: score for the given image judged by the target neuron
         """
         tim = self._transformer.preprocess('data', im / 255.)
-        self._classifier.forward(data=np.array([tim]), end=self._net_layer)
-        score = self._classifier.blobs[self._net_layer].data[0, self._net_iunit]
+        if self._engine == 'caffe':
+            self._classifier.forward(data=np.array([tim]), end=self._net_layer)
+            y = self._classifier.blobs[self._net_layer].data
+        else:
+            tim = self._torch_lib.tensor(tim[None, ...], dtype=self._torch_dtype)
+            if gpu_available:
+                self._classifier.forward(tim.cuda())
+                y = self._fwd_hk.o.detach().cpu().numpy()
+            else:
+                self._classifier.forward(tim)
+                y = self._fwd_hk.o.detach().numpy()
+        score = y[0, self._net_iunit]
         if self._net_unit_x is not None:
             score = score[self._net_unit_x, self._net_unit_y]
         if self._stoch:
@@ -154,12 +196,13 @@ class WithIOCNNScorer(WithIOScorer, NoIOCNNScorer):
     Images are written to disk, read from disk, then evaluated with the same behavior as WithIOScorer/EphysScorer
     """
 
-    def __init__(self, log_dir, target_neuron, write_dir, image_size=None, random_seed=None,
+    def __init__(self, log_dir, target_neuron, write_dir, engine='caffe', image_size=None, random_seed=None,
                  stochastic=False, stochastic_random_seed=None, reps=1):
         """
         :param log_dir: str (path), directory to which to backup images and scores
         :param target_neuron: 5-tuple
             (network_name (str), layer_name (str), unit_index (int) [, x_index (int), y_index (int)])
+        :param engine: 'caffe' or 'pytorch'
         :param write_dir: str (path), directory to which to write images
         :param image_size: int, size in pixels to which to resize all images; default is to leave unchanged
         :param random_seed: int
@@ -172,7 +215,7 @@ class WithIOCNNScorer(WithIOScorer, NoIOCNNScorer):
             number of stochastic scores to produce for the same image
             only meaningful if stochastic == True
         """
-        NoIOCNNScorer.__init__(self, log_dir, target_neuron,
+        NoIOCNNScorer.__init__(self, log_dir, target_neuron, engine=engine,
                                stochastic=stochastic, stochastic_random_seed=stochastic_random_seed, reps=reps)
         WithIOScorer.__init__(self, write_dir, log_dir, image_size=image_size, random_seed=random_seed)
 

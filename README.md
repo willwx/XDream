@@ -5,6 +5,8 @@ Journal paper available at https://www.cell.com/cell/fulltext/S0092-8674(19)3039
 Update (19/4/3): Added rudimentary support for PyTorch.
     See below for details.
 
+Update (19/5/10): PyTorch can now be used instead of caffe.
+
 ## Introduction
 XDream (E**x**tending **D**eepDream with **r**eal-time **e**volution
 for **a**ctivity **m**aximization in real neurons)
@@ -50,12 +52,16 @@ image parameterization (e.g.,
 ![OptimizerScorer](./illustrations/GenOpt.png)
 
 ## Prerequisites
-- The [caffe](http://caffe.berkeleyvision.org) or
-    the [PyTorch](http://pytorch.org) library.
+- The [PyTorch](http://pytorch.org) library or
+    the [caffe](http://caffe.berkeleyvision.org) library.
+    Main functionalities are available with both, but
+    some legacy functionalities have not been ported to pytorch.
     
-    On ubuntu \> 17.04, caffe can be easily
-    [installed](http://caffe.berkeleyvision.org/install_apt.html)
-    with
+    To install PyTorch, please visit the
+    [official website](https://pytorch.org) for instructions.
+  
+    To [install caffe](http://caffe.berkeleyvision.org/install_apt.html),
+    on ubuntu \> 17.04 you can use
     > sudo apt install caffe-cpu
     
     for CPU-only version, or
@@ -74,37 +80,37 @@ image parameterization (e.g.,
     "Programming Languages/Visual C++/Common Tools for Visual C++ 2015"
     in Visual Studion Community 2015.
     
-    For PyTorch, please visit the official website for
-    installation instructions.
+     Alternatively, caffe can be built from source.
 
 - `local_settings.py`. Copy it from `local_settings.example.py` and 
     modify the contents to match your system.
 
 - Pretrained generative networks.
-    The DeepSiM generators can be downloaded from
-    [here](https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html)
-    (caffe version). The prototxt files (slightly modified from original) are included
-    in the prototxt folder.
-    
-    The caffe models have been converted into PyTorch.
-    They are defined in `tf_nets.py`, and the weights are available
+    The DeepSiM generators have been converted into pytorch from caffe. 
+    They are defined in `torch_nets/deepsim.py`, and the weights are available
     [here](https://drive.google.com/open?id=1sV54kv5VXvtx4om1c9kBPbdlNuurkGFi).
+    
+    The original caffe models can be downloaded from
+    [here](https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html).
+    The prototxt files (slightly modified from original) are included
+    in the prototxt folder.
    
   Please make sure the paths defined in `net_catalogue.py` match
    the downloaded `.caffemodel`, `.prototxt`, and/or `.pt` files. 
    
 
-- (For the demo) The reference caffenet model. It can be found
-    [here](https://github.com/BVLC/caffe/tree/master/models/bvlc_reference_caffenet).
+- For the demo, the pytorch pretrained alexnet model. It is available
+    [here](https://download.pytorch.org/models/alexnet-owt-4df8aa71.pth).
     Please save the model files to the paths defined in
-    `net_catalogue.py`. Other vision models can also be used.
+    `net_catalogue.py`. Other vision models, such as CaffeNet for caffe,
+    can also be used.
 
 
 ## Demo
 Run
-> python experiment_CNN.py
+> python demo.py
 
-The demo currently requires caffe.
+The demo uses pytorch by default.
 
 
 ## To extend
