@@ -3,12 +3,14 @@ Example script for running an experiment to maximize activity of CNN units (with
 """
 
 import os
+import sys
+sys.path.append('../xdream')    # or, add to path in your environment
 from Experiments import CNNExperiment
 
 
 # some arbitrary targets
 target_neuron = ('alexnet', 'classifier.6', 1)    # for caffenet, use ('caffenet', 'fc8', 1)
-project_dir = os.path.expanduser('~/Documents/data/with_CNN2')
+project_dir = 'demo'    # change as needed
 generator_name = 'deepsim-fc6'
 exp_settings = {
     'optimizer_name': 'genetic',
@@ -28,7 +30,7 @@ exp_settings = {
     'random_seed': 0,
     'stochastic': False,
     'config_file_path': __file__,
-    # 'wait_each_step': 0
+    # 'wait_each_step': 0    # to simulate a delay (for presenting images)
 }
 scorer_parameters = {'engine': 'pytorch'}    # comment out to use CaffeNet in caffe
 
