@@ -2,7 +2,7 @@
 Example script for running an experiment to maximize activity of CNN units (without backprop)
 """
 
-import os
+from pathlib import Path
 import sys
 sys.path.append('../xdream')    # or, add to path in your environment
 from Experiments import CNNExperiment
@@ -30,13 +30,13 @@ exp_settings = {
     'random_seed': 0,
     'stochastic': False,
     'config_file_path': __file__,
-    # 'wait_each_step': 0    # to simulate a delay (for presenting images)
+    # 'wait_each_step': 0    # simulates the delay of image presentation
 }
 scorer_parameters = {'engine': 'pytorch'}    # comment out to use CaffeNet in caffe
 
 
 if __name__ == '__main__':
-    os.makedirs(project_dir, exist_ok=True)
+    Path(project_dir).mkdir(exist_ok=True)
     exp_settings['scorer_parameters'] = scorer_parameters    # comment out to use CaffeNet in caffe
     exp_settings['project_dir'] = project_dir
     exp_settings['target_neuron'] = target_neuron

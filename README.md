@@ -134,4 +134,5 @@ empirically optimizing hyperparameters.
 - Restructure repository
 - Add data and plotting code
     (characterizing performance in simulated experiments
-    with CNNs)   
+    with CNNs)
+- Clean up code

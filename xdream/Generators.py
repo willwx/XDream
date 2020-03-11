@@ -1,6 +1,6 @@
 import numpy as np
-import net_catalogue
-from local_settings import gpu_available
+from net_utils import net_catalogue, net_loader
+from net_utils.local_settings import gpu_available
 from utils import resize_image
 
 
@@ -56,9 +56,9 @@ class NNGenerator(Generator):
         self._engine = engine
         self._dtype = None
         self._detransformer = None
-        self._input_layer_name = net_catalogue.net_io_layers[gnn_name]['input_layer_name']
-        self._output_layer_name = net_catalogue.net_io_layers[gnn_name]['output_layer_name']
-        self._code_shape = net_catalogue.net_io_layers[gnn_name]['input_layer_shape']
+        self._input_layer_name = net_catalogue.net_meta[gnn_name]['input_layer_name']
+        self._output_layer_name = net_catalogue.net_meta[gnn_name]['output_layer_name']
+        self._code_shape = net_catalogue.net_meta[gnn_name]['input_layer_shape']
         self._input_layer_shape = (1, *self._code_shape)    # add batch dimension
 
         # pytorch specific
@@ -69,9 +69,8 @@ class NNGenerator(Generator):
 
     def load_generator(self):
         if self._GNN is None:
-            import net_loader
-            self._GNN, self._engine = net_loader.load(self._gnn_name, self._engine, self._fresh_copy)
-            self._detransformer = net_loader.get_transformer(self._gnn_name, self._engine, outputs_image=True)
+            self._GNN, self._engine = net_loader.load_net(self._gnn_name, self._engine, self._fresh_copy)
+            self._detransformer = net_loader.get_transformer(self._gnn_name, self._engine, is_generator=True)
             if self._engine == 'caffe':
                 self._dtype = self._GNN.blobs[self._input_layer_name].data.dtype
             elif self._engine == 'pytorch':

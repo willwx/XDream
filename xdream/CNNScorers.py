@@ -1,6 +1,6 @@
 import os
 import numpy as np
-import net_loader
+from net_utils import net_loader
 import utils
 from Scorers import Scorer, WithIOScorer
 
@@ -101,8 +101,8 @@ class NoIOCNNScorer(Scorer):
         """
         Load the underlying neural network; initialize dependent attributes
         """
-        self._classifier = net_loader.load(self._classifier_name, engine=self._engine)[0]
-        self._transformer = net_loader.get_transformer(self._classifier_name, self._engine)
+        self._classifier = net_loader.load_net(self._classifier_name, engine=self._engine)[0]
+        self._transformer = net_loader.get_transformer(self._classifier_name, self._engine, self._classifier)
         if self._engine == 'pytorch':
             import torch
             self._torch_lib = torch

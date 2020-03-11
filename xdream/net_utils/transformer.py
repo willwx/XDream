@@ -1,5 +1,6 @@
 """
-Copied from io.py from caffe library
+Modified from io.py from caffe library
+Make value for 'inputs' optional; remove batch dimension  #TODO
 """
 
 import numpy as np
@@ -19,6 +20,10 @@ class Transformer:
     net : a Net for which the input should be prepared
     """
     def __init__(self, inputs):
+        """
+        :param inputs: dict {input_name: image shape (C x H x W)}.
+            Note that channel dimension comes first per caffe convention!
+        """
         self.inputs = inputs
         self.transpose = {}
         self.channel_swap = {}
@@ -58,9 +63,10 @@ class Transformer:
         raw_scale = self.raw_scale.get(in_)
         mean = self.mean.get(in_)
         input_scale = self.input_scale.get(in_)
-        in_dims = self.inputs[in_][2:]
-        if caffe_in.shape[:2] != in_dims:
-            caffe_in = resize_image(caffe_in, in_dims)
+        if self.inputs[in_] is not None:
+            in_dims = self.inputs[in_][1:]
+            if caffe_in.shape[:2] != in_dims:
+                caffe_in = resize_image(caffe_in, in_dims)
         if transpose is not None:
             caffe_in = caffe_in.transpose(transpose)
         if channel_swap is not None:
@@ -108,7 +114,7 @@ class Transformer:
             for example (2,0,1) changes HxWxC into CxHxW and (1,2,0) reverts
         """
         self.__check_input(in_)
-        if len(order) != len(self.inputs[in_]) - 1:
+        if self.inputs[in_] is not None and len(order) != len(self.inputs[in_]):
             raise Exception('Transpose order needs to have the same number of '
                             'dimensions as the input.')
         self.transpose[in_] = order
@@ -126,7 +132,7 @@ class Transformer:
             (2,1,0) maps RGB to BGR for example.
         """
         self.__check_input(in_)
-        if len(order) != self.inputs[in_][1]:
+        if self.inputs[in_] is not None and len(order) != self.inputs[in_][0]:
             raise Exception('Channel swap needs to have the same number of '
                             'dimensions as the input channels.')
         self.channel_swap[in_] = order
@@ -159,7 +165,7 @@ class Transformer:
         ms = mean.shape
         if mean.ndim == 1:
             # broadcast channels
-            if ms[0] != self.inputs[in_][1]:
+            if self.inputs[in_] is not None and ms[0] != self.inputs[in_][0]:
                 raise ValueError('Mean channels incompatible with input.')
             mean = mean[:, np.newaxis, np.newaxis]
         else:
@@ -168,13 +174,12 @@ class Transformer:
                 ms = (1,) + ms
             if len(ms) != 3:
                 raise ValueError('Mean shape invalid')
-            if ms != self.inputs[in_][1:]:
-                in_shape = self.inputs[in_][1:]
+            if self.inputs[in_] is not None and ms != self.inputs[in_]:
                 m_min, m_max = mean.min(), mean.max()
                 normal_mean = (mean - m_min) / (m_max - m_min)
-                mean = resize_image(normal_mean.transpose((1,2,0)),
-                        in_shape[1:]).transpose((2,0,1)) * \
-                        (m_max - m_min) + m_min
+                mean = resize_image(normal_mean.transpose((1, 2, 0)),
+                                    self.inputs[in_][1:]).transpose((2, 0, 1))
+                mean = mean * (m_max - m_min) + m_min
         self.mean[in_] = mean
 
     def set_input_scale(self, in_, scale):
