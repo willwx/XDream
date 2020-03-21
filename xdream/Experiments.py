@@ -540,7 +540,7 @@ class CNNExperiment(ExperimentBase):
     def __init__(self, project_dir, optimizer_name, optimizer_parameters, target_neuron, with_write,
                  image_size=None, stochastic=None, stochastic_random_seed=None, reps=None, scorer_parameters=None,
                  natural_stimuli_dir=None, n_natural_stimuli=None, save_natural_stimuli_copy=False,
-                 random_seed=None, config_file_path=None, max_images=None, max_steps=None,
+                 random_seed=None, config_file_path=None, max_optimize_images=None, max_steps=None,
                  write_codes=False, write_last_codes=False, write_best_last_code=True,
                  write_last_images=False, write_best_last_image=True):
         """
@@ -577,7 +577,7 @@ class CNNExperiment(ExperimentBase):
             path to the .py file defining the experiment,
             intended for saving a copy of it as part of the log
             default is to not save any file
-        :param max_images: int
+        :param max_optimize_images: int
             max number of images to show; default is not set (experiment must be interrupted manually)
         :param max_steps: int
             max number of steps to run; superseded by `max_images`; default is not set
@@ -627,12 +627,12 @@ class CNNExperiment(ExperimentBase):
             nthreads=1, random_seed=random_seed, config_file_path=config_file_path
         )
 
-        if max_images is not None:
+        if max_optimize_images is not None:
             if stochastic:
                 reps = self.scorer.parameters['reps']
-                self._max_steps = int(max_images / self.optimizer.n_samples / reps)
+                self._max_steps = int(max_optimize_images / self.optimizer.n_samples / reps)
             else:
-                self._max_steps = int(max_images / self.optimizer.n_samples)
+                self._max_steps = int(max_optimize_images / self.optimizer.n_samples)
             self._max_steps = max(1, self._max_steps)
         elif max_steps is not None:
             self._max_steps = max(1, int(max_steps))

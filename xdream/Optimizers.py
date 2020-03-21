@@ -88,6 +88,16 @@ class Optimizer:
             curr_images.append(im_arr)
         self._curr_images = curr_images
 
+    def set_initialization(self, samples):
+        if self._curr_samples is None:
+            raise NotImplemented
+        else:
+            assert self._istep == 0, 'can only change initialization at the beginning'
+            assert samples.shape == self._curr_samples.shape, \
+                f'initialization should be shape {self._curr_samples.shape}; '\
+                f'got {samples.shape}'
+            self._curr_samples = samples
+
     def step(self, scores):
         """
         Updates current samples and images to increase expected future scores
@@ -237,13 +247,15 @@ class Genetic(Optimizer):
         # initialize samples & indices
         self._init_population_dir = initial_codes_dir
         self._init_population_fns = None
+        self._genealogy = None
         if initial_codes_dir is None:
             self._init_population = \
                 self._random_generator.normal(loc=0, scale=1, size=(self._popsize, *self._code_shape))
+            self._genealogy = ['standard_normal'] * self._popsize
         else:
+            # this will set self._init_population and self._genealogy
             self._load_init_population(initial_codes_dir, copy=save_init)
         self._curr_samples = self._init_population.copy()    # curr_samples is current population of codes
-        self._genealogy = ['standard_normal'] * self._popsize
         self._curr_sample_idc = range(self._popsize)
         self._next_sample_idx = self._popsize
         if self._thread is None:
@@ -251,6 +263,10 @@ class Genetic(Optimizer):
         else:
             self._curr_sample_ids = ['thread%02d_gen%03d_%06d' %
                                      (self._thread, self._istep, idx) for idx in self._curr_sample_idc]
+
+    def set_initialization(self, samples):
+        super().set_initialization(samples)
+        self._genealogy = ['manual_init'] * self._popsize
 
     def _load_init_population(self, intcodedir, size=None, copy=True):
         # make sure we are at the beginning of experiment

@@ -26,7 +26,7 @@ exp_settings = {
     },
     'with_write': True,
     'image_size': 64,
-    'max_images': 1000,
+    'max_optimize_images': 1000,
     'random_seed': 0,
     'stochastic': False,
     'config_file_path': __file__,
