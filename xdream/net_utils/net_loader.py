@@ -92,22 +92,22 @@ def load_net(net_name, engine=None, fresh_copy=False):
 
 
 def get_transformer(net_name, net_engine='caffe',
-                    net=None, scale=None, is_generator=None):
+                    net=None, scale=None, outputs_image=None):
     if scale is None:
         scale = net_meta[net_name].get('scale', 255)
-    if is_generator is None:
+    if outputs_image is None:
         try:
-            is_generator = net_meta[net_name]['type'] == 'generator'
+            outputs_image = net_meta[net_name]['type'] == 'generator'
         except KeyError:
-            is_generator = False
+            outputs_image = False
     im_layer_shape = None
     if net is not None and net_engine == 'caffe':    # pytorch has no uniform API for layer shape
-        im_layer_name = net.outputs if is_generator else net.inputs
+        im_layer_name = net.outputs if outputs_image else net.inputs
         im_layer_name = im_layer_name.__iter__().__next__()
         im_layer_shape = tuple(net.blobs[im_layer_name].shape[1:])
     if im_layer_shape is None:    # try static catalogue
         try:
-            key = 'output_layer_shape' if is_generator else 'input_layer_shape'
+            key = 'output_layer_shape' if outputs_image else 'input_layer_shape'
             im_layer_shape = net_meta[net_name][key]
         except KeyError:
             pass

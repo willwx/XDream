@@ -23,7 +23,8 @@ class NoIOCNNScorer(Scorer):
     """
 
     def __init__(self, log_dir, target_neuron, engine='caffe', image_size=None,
-                 stochastic=False, stochastic_random_seed=None, reps=1, **kwargs):
+                 stochastic=False, stochastic_random_seed=None, stochastic_scale=None, reps=1,
+                 load_on_init=True, **kwargs):
         """
         :param log_dir: str (path), directory to which to backup images and scores
         :param target_neuron: 3- or 5-tuple
@@ -33,17 +34,22 @@ class NoIOCNNScorer(Scorer):
         :param stochastic: bool, whether to inject random Poisson noise to CNN responses; default is False
         :param stochastic_random_seed: int
             when set, the pseudo-stochastic noice will be deterministic; default is to set to `random_seed`
+        :param stochastic_scale: float
+            the score will be multipled by the scale before applying stochastic (Poisson) noise;
+            default is None (not scaled)
         :param reps: int
             number of stochastic scores to produce for the same image
             only meaningful if stochastic == True
         """
         assert engine in ('caffe', 'pytorch'), f'CNNScorer for engine {engine} is not currently supported'
 
-        Scorer.__init__(self, log_dir)
+        super().__init__(log_dir, image_size=image_size,
+                         stochastic=stochastic, stochastic_random_seed=stochastic_random_seed,
+                         stochastic_scale=stochastic_scale, reps=reps)
 
         self._classifier_name = str(target_neuron[0])
         self._net_layer = str(target_neuron[1])
-        self._net_iunit = int(target_neuron[2])
+        self._net_iunit = target_neuron[2]
         if len(target_neuron) == 5:
             self._net_unit_x = int(target_neuron[3])
             self._net_unit_y = int(target_neuron[4])
@@ -63,39 +69,8 @@ class NoIOCNNScorer(Scorer):
         self._torch_dtype = None
         self._fwd_hk = None
 
-        if image_size is None:
-            self._imsize = None
-        else:
-            self._imsize = abs(int(image_size))
-
-        self._stoch = bool(stochastic)
-        self._stoch_rand_seed = None
-        self._reps = 1
-        if self._stoch:
-            self._reps = int(max(1, reps))    # handles reps=None correctly
-            print('%s: stochastic; %d reps' % (self.__class__.__name__, self._reps))
-            if stochastic_random_seed is None:
-                stochastic_random_seed = np.random.randint(100000)
-                print('%s: stochastic random seed not provided, using %d for reproducibility' %
-                      (self.__class__.__name__, stochastic_random_seed))
-            else:
-                stochastic_random_seed = abs(int(stochastic_random_seed))
-                print('%s: stochastic random seed set to %d' % (self.__class__.__name__, stochastic_random_seed))
-            self._stoch_rand_seed = stochastic_random_seed
-            self._stoch_rand_gen = np.random.RandomState(seed=stochastic_random_seed)
-        else:
-            if stochastic_random_seed is not None:
-                print('%s: not stochastic; stochastic random seed %s not used' %
-                      (self.__class__.__name__, stochastic_random_seed))
-            if reps is not None and reps != 1:
-                print('%s: not stochastic; reps = %d not used' %
-                      (self.__class__.__name__, reps))
-                self._stoch_rand_seed = None
-                self._stoch_rand_gen = None
-
-        self._istep = -1
-        self._curr_scores_mat = None
-        self._curr_nscores = None
+        if load_on_init:
+            self.load_classifier()
 
     def load_classifier(self):
         """
@@ -118,7 +93,7 @@ class NoIOCNNScorer(Scorer):
             self._fwd_hk = fwd_hk
             self._torch_dtype = self._classifier.parameters().__iter__().__next__().dtype
 
-    def _score_image_by_CNN(self, im):
+    def _score_image(self, im):
         """
         :param im: a numpy array representing an 8-bit image
         :return: score for the given image judged by the target neuron
@@ -137,56 +112,13 @@ class NoIOCNNScorer(Scorer):
                 y = self._fwd_hk.o.detach().numpy()
         score = y[0, self._net_iunit]
         if self._net_unit_x is not None:
-            score = score[self._net_unit_x, self._net_unit_y]
-        if self._stoch:
-            score = self._stoch_rand_gen.poisson(max(0, score), size=self._reps)
-        return score
-
-    def score(self, images, image_ids):
-        nimgs = len(images)
-        assert len(image_ids) == nimgs
-        for imgid in image_ids:
-            if not isinstance(imgid, str):
-                raise ValueError('image_id should be str; got %s ' % str(type(imgid)))
-        image_ids = utils.make_ids_unique(image_ids)
-
-        scores_mat = []
-        for im in images:
-            im = utils.resize_image(im, self._imsize)
-            score = self._score_image_by_CNN(im)
-            scores_mat.append(score)
-        scores_mat = np.array(scores_mat)
-        if self._stoch:
-            scores = np.mean(scores_mat, axis=1)
-        else:
-            scores = scores_mat
-        self._curr_images = images
-        self._curr_imgids = image_ids
-        self._curr_scores = scores
-        self._curr_scores_mat = scores_mat
-        self._curr_nscores = np.full(len(images), self._reps)
-        self._istep += 1
-        return scores
-
-    def save_current_scores(self):
-        """
-        Save scores for current images to log_dir
-        """
-        if self._istep < 0:
-            raise RuntimeWarning('no scores evaluated; scores not saved')
-        else:
-            save_kwargs = {'image_ids': self._curr_imgids, 'scores': self._curr_scores}
-            if self._stoch:
-                save_kwargs.update({'scores_mat': self._curr_scores_mat, 'nscores': self._curr_nscores})
-            savefpath = os.path.join(self._logdir, 'scores_step%03d.npz' % self._istep)
-            print('saving scores to %s' % savefpath)
-            utils.save_scores(savefpath, save_kwargs)
+            score = score[..., self._net_unit_x, self._net_unit_y]
+        return score.copy()
 
     @property
     def parameters(self):
-        params = super(NoIOCNNScorer, self).parameters
-        params.update({'target_neuron': self._target_neuron, 'image_size': self._imsize,
-                       'stochastic': self._stoch, 'reps': self._reps, 'stochastic_random_seed': self._stoch_rand_seed})
+        params = super().parameters
+        params.update({'target_neuron': self._target_neuron})
         return params
 
 
@@ -197,7 +129,7 @@ class WithIOCNNScorer(WithIOScorer, NoIOCNNScorer):
     """
 
     def __init__(self, log_dir, target_neuron, write_dir, engine='caffe', image_size=None, random_seed=None,
-                 stochastic=False, stochastic_random_seed=None, reps=1):
+                 stochastic=False, stochastic_random_seed=None, stochastic_scale=None, reps=1):
         """
         :param log_dir: str (path), directory to which to backup images and scores
         :param target_neuron: 5-tuple
@@ -211,15 +143,19 @@ class WithIOCNNScorer(WithIOScorer, NoIOCNNScorer):
         :param stochastic: bool, whether to inject random Poisson noise to CNN responses; default is False
         :param stochastic_random_seed: int
             when set, the pseudo-stochastic noice will be deterministic; default is to set to `random_seed`
+        :param stochastic_scale: float
+            the score will be multipled by the scale before applying stochastic (Poisson) noise;
+            default is None (not scaled)
         :param reps: int
             number of stochastic scores to produce for the same image
             only meaningful if stochastic == True
         """
         NoIOCNNScorer.__init__(self, log_dir, target_neuron, engine=engine,
-                               stochastic=stochastic, stochastic_random_seed=stochastic_random_seed, reps=reps)
+                               stochastic=stochastic, stochastic_random_seed=stochastic_random_seed,
+                               stochastic_scale=stochastic_scale, reps=reps)
         WithIOScorer.__init__(self, write_dir, log_dir, image_size=image_size, random_seed=random_seed)
 
-    def _get_scores(self):
+    def _with_io_get_scores(self):
         imgid_2_local_idx = {imgid: i for i, imgid in enumerate(self._curr_imgids)}
         organized_scores = []
         scores_local_idx = []
@@ -227,7 +163,7 @@ class WithIOCNNScorer(WithIOScorer, NoIOCNNScorer):
 
         for imgfn in self._curr_imgfn_2_imgid.keys():
             im = utils.read_image(os.path.join(self._writedir, imgfn))
-            score = self._score_image_by_CNN(im)
+            score = self._score_image(im)
             try:
                 imgid = self._curr_imgfn_2_imgid[imgfn]
                 local_idx = imgid_2_local_idx[imgid]

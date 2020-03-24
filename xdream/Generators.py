@@ -1,5 +1,5 @@
 import numpy as np
-from net_utils import net_catalogue, net_loader
+from net_utils import net_catalogue
 from net_utils.local_settings import gpu_available
 from utils import resize_image
 
@@ -13,26 +13,21 @@ class Generator:
     def load_generator(self):
         pass
 
+    def check_digitize_image(self, im):
+        if self._digitize:
+            return im.astype(np.uint8)
+        return im
+
     def visualize(self, code):
-        raise NotImplementedError
-
-    def encode(self, im):
-        raise NotImplementedError
-
-    def reencode(self, code):
         raise NotImplementedError
 
     @property
     def name(self):
-        raise NotImplementedError
-
-    @property
-    def code_shape(self):
-        raise NotImplementedError
+        return self.__class__.__name__
 
     @property
     def digitize_image(self):
-        raise NotImplementedError
+        return self._digitize
 
     @property
     def parameters(self):
@@ -44,7 +39,11 @@ class Generator:
         return True
 
     @property
-    def dtype(self):
+    def code_shape(self):
+        raise NotImplementedError
+
+    @property
+    def code_dtype(self):
         raise NotImplementedError
 
 
@@ -65,12 +64,13 @@ class NNGenerator(Generator):
         self._torch_lib = None
         self._torch_dtype = None
 
-        super(NNGenerator, self).__init__(digitize_image=digitize_image, load_on_init=load_on_init)
+        super().__init__(digitize_image=digitize_image, load_on_init=load_on_init)
 
     def load_generator(self):
         if self._GNN is None:
+            from net_utils import net_loader
             self._GNN, self._engine = net_loader.load_net(self._gnn_name, self._engine, self._fresh_copy)
-            self._detransformer = net_loader.get_transformer(self._gnn_name, self._engine, is_generator=True)
+            self._detransformer = net_loader.get_transformer(self._gnn_name, self._engine, outputs_image=True)
             if self._engine == 'caffe':
                 self._dtype = self._GNN.blobs[self._input_layer_name].data.dtype
             elif self._engine == 'pytorch':
@@ -98,10 +98,7 @@ class NNGenerator(Generator):
         x = self._detransformer.deprocess('data', x)
         x = np.clip(x, 0, 1) * 255
         # x = x[14:241, 14:241, :]
-        if self._digitize:
-            return x.astype('uint8')
-        else:
-            return x
+        return self.check_digitize_image(x)
 
     def encode(self, im, steps=100):
         """
@@ -139,19 +136,15 @@ class NNGenerator(Generator):
         return self._gnn_name
 
     @property
-    def code_shape(self):
-        return self._code_shape
-
-    @property
-    def digitize_image(self):
-        return self._digitize
-
-    @property
     def loaded(self):
         return self._GNN is not None
 
     @property
-    def dtype(self):
+    def code_shape(self):
+        return self._code_shape
+
+    @property
+    def code_dtype(self):
         # most models use single-precision float
         return self._dtype
 
@@ -160,13 +153,13 @@ class RawPixGenerator(Generator):
     def __init__(self, size=256, code_range=1, digitize_image=True, load_on_init=True):
         assert isinstance(size, int) and size > 0
         # warning: use of large code_range is discouraged due to potential problems when saving as float16
-        # see self.dtype
+        # see self.code_dtype
         assert code_range > 0
 
         self._im_shape = (size, size, 3)
         self._drange = float(code_range)
 
-        super(RawPixGenerator, self).__init__(digitize_image=digitize_image, load_on_init=load_on_init)
+        super().__init__(digitize_image=digitize_image, load_on_init=load_on_init)
 
     def visualize(self, code):
         im = code.reshape(self._im_shape)
@@ -194,10 +187,6 @@ class RawPixGenerator(Generator):
         return recode
 
     @property
-    def code_range(self):
-        return self._drange
-
-    @property
     def name(self):
         return 'raw_pixel'
 
@@ -206,13 +195,13 @@ class RawPixGenerator(Generator):
         return self._im_shape
 
     @property
-    def digitize_image(self):
-        return self._digitize
-
-    @property
-    def dtype(self):
+    def code_dtype(self):
         # half-precision float should be sufficient for saving raw_pix code, which maps to 8-bit images
         return np.float16
+
+    @property
+    def code_range(self):
+        return self._drange
 
 
 def get_generator(generator_name, *args, **kwargs):

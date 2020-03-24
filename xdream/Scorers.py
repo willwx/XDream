@@ -1,35 +1,134 @@
 import os
+from os import path as ospath
 import shutil
 from time import time, sleep
+
 import numpy as np
+import h5py as h5
 import utils
 
 
 class Scorer:
-    def __init__(self, log_dir, **kwargs):
+    def __init__(self, log_dir, image_size=None,
+                 stochastic=False, stochastic_random_seed=None, stochastic_scale=None, reps=1):
         """
         :param log_dir: str (path), directory to which to backup images and scores
+        :param image_size: int, size in pixels to which to resize all images; default is to leave unchanged
+        :param stochastic: bool, whether to inject random Poisson noise to CNN responses; default is False
+        :param stochastic_random_seed: int
+            when set, the pseudo-stochastic noice will be deterministic; default is to set to `random_seed`
+        :param stochastic_scale: float
+            the score will be multipled by the scale before applying stochastic (Poisson) noise;
+            default is None (not scaled)
+        :param reps: int
+            number of stochastic scores to produce for the same image
+            only meaningful if stochastic == True
         """
-        assert os.path.isdir(log_dir), 'invalid record directory: %s' % log_dir
+        assert ospath.isdir(log_dir), f'invalid record directory: {log_dir}'
+        if stochastic_scale is not None:
+            assert stochastic_scale > 0
+            stochastic_scale = float(stochastic_scale)
+        else:
+            stochastic_scale = 1
 
+        if image_size is None:
+            self._imsize = None
+        else:
+            self._imsize = abs(int(image_size))
+
+        self._istep = -1
         self._curr_images = None
         self._curr_imgids = None
         self._curr_scores = None
+        self._curr_scores_reps = None    # shape (n_ims, n_reps)
+        self._curr_nscores = None
         self._logdir = log_dir
+
+        self._stoch = bool(stochastic)
+        self._stoch_rand_seed = None
+        self._stoch_scale = stochastic_scale
+        self._curr_scores_no_stoch = None
+        self._reps = 1
+        if self._stoch:
+            self._reps = int(max(1, reps))    # handles reps=None correctly
+            print(f'{self.__class__.__name__}: stochastic; {self._reps} reps')
+            if stochastic_random_seed is None:
+                stochastic_random_seed = np.random.randint(100000)
+                print(f'{self.__class__.__name__}: stochastic random seed not provided, '
+                      'using {stochastic_random_seed} for reproducibility')
+            else:
+                stochastic_random_seed = abs(int(stochastic_random_seed))
+                print(f'{self.__class__.__name__}: stochastic random seed set to {stochastic_random_seed}')
+            self._stoch_rand_seed = stochastic_random_seed
+            self._stoch_rand_gen = np.random.RandomState(seed=stochastic_random_seed)
+        else:
+            if stochastic_random_seed is not None:
+                print(f'{self.__class__.__name__}: not stochastic; '
+                      f'stochastic random seed {stochastic_random_seed} not used')
+            if reps is not None and reps != 1:
+                print(f'{self.__class__.__name__}: not stochastic; reps = {reps} not used')
+                self._stoch_rand_seed = None
+                self._stoch_rand_gen = None
+
+    def _score_image(self, im):
+        raise NotImplemented
 
     def score(self, images, image_ids):
         """
         :param images: a list of numpy arrays of dimensions (h, w, c) and type uint8 containing images to be scored
-        :param image_ids: a list of strs as unique identifier of each image
+        :param image_ids: a list of strs as unique identifier of each image;
+            using non-unique ids will lead to undefined behavior
+        :param skip_stoch: skip making scores stochastic; has not effect if scorer is not stochastic
         :return: scores for each image
         """
-        raise NotImplementedError
+        nimgs = len(images)
+        assert len(image_ids) == nimgs
+        for imgid in image_ids:
+            if not isinstance(imgid, str):
+                raise ValueError(f'image_id should be str; got {type(imgid)}')
+
+        scores = []
+        scores_no_stoch = []
+        for im in images:
+            im = utils.resize_image(im, self._imsize)
+            score = self._score_image(im)
+            if self._stoch:
+                scores_no_stoch.append(score)
+                score = self._stoch_rand_gen.poisson(
+                    max(0, score * self._stoch_scale),
+                    size=(self._reps, *score.shape)
+                ) / self._stoch_scale
+            scores.append(score)
+        scores = np.array(scores)
+        if self._stoch:
+            scores_reps = np.moveaxis(scores, 1, -1)
+            scores = np.mean(scores, axis=1)
+            scores_no_stoch = np.array(scores_no_stoch)
+            self._curr_scores_reps = scores_reps
+            self._curr_scores_no_stoch = scores_no_stoch
+        else:
+            self._curr_scores_reps = scores[..., None]
+        self._curr_images = images
+        self._curr_imgids = image_ids
+        self._curr_scores = scores
+        self._curr_nscores = np.full(len(images), self._reps)
+        self._istep += 1
+        return scores
 
     def save_current_scores(self):
         """
         Save scores for current images to log_dir
         """
-        raise NotImplementedError
+        if self._istep < 0:
+            raise RuntimeWarning('no scores evaluated; scores not saved')
+        else:
+            save_kwargs = {'image_ids': self._curr_imgids, 'scores': self._curr_scores}
+            if self._stoch:
+                save_kwargs.update({'scores_reps': self._curr_scores_reps,
+                                    'scores_no_stoch': self._curr_scores_no_stoch})
+            savefpath = ospath.join(self._logdir, f'scores_step{self._istep:03d}.npz')
+            print('saving scores to', savefpath)
+            utils.save_scores(savefpath, save_kwargs)
 
     @property
     def curr_scores(self):
@@ -37,7 +136,11 @@ class Scorer:
 
     @property
     def parameters(self):
-        return {'class': self.__class__.__name__}    # no other parameters
+        params = {'class': self.__class__.__name__, 'image_size': self._imsize,
+                  'stochastic': self._stoch, 'reps': self._reps, 'stochastic_random_seed': self._stoch_rand_seed}
+        if self._stoch_scale != 1:
+            params['stochastic_scale'] = self._stoch_scale
+        return params
 
 
 class BlockWriter:
@@ -45,8 +148,11 @@ class BlockWriter:
     Utilities for writing images to disk in specified block sizes, num of reps, random order, & image size
     Initialize with blockwriter.show_images(images, IDs), show with blockwriter.write_block() until blockwriter.done
     """
+    _available_image_formats = ('bmp', 'png')
+
     def __init__(self, write_dir, backup_dir, block_size=None,
-                 reps=1, image_size=None, random_seed=None, cleanup_dir=None):
+                 reps=1, image_size=None, random_seed=None, cleanup_dir=None,
+                 image_format='png', image_gray=False):
         """
         :param write_dir: str (path), directory to which to write images
         :param backup_dir: str (path), directory to which to backup images and scores
@@ -59,6 +165,11 @@ class BlockWriter:
         :param cleanup_dir: str (path)
             path to which images will be saved when calling cleanup; default is to delete images
         """
+        assert image_format in self._available_image_formats, \
+            f'image format {image_format} is not supported; ' \
+            f'available formats: {self._available_image_formats}. ' \
+            f'Please add new formats explicitly.'
+
         self._writedir = write_dir
         self._backupdir = backup_dir
         self._cleanupdir = cleanup_dir
@@ -74,33 +185,42 @@ class BlockWriter:
         self._iloop = -1
         self._blocksize = None
         self._reps = None
+        self._fmt = image_format
+        self._grayscale = bool(image_gray)
 
         self.block_size = block_size
         self.reps = reps
         self.image_size = image_size
         if random_seed is None:
             random_seed = np.random.randint(100000)
-            print('%s: random seed not provided, using %d for reproducibility' %
-                  (self.__class__.__name__, random_seed))
+            print(f'{self.__class__.__name__}: random seed not provided, using {random_seed} for reproducibility')
         else:
-            print('%s: random seed set to %d' % (self.__class__.__name__, random_seed))
+            print(f'{self.__class__.__name__}: random seed set to {random_seed}')
         self._random_generator = np.random.RandomState(seed=random_seed)
         self._random_seed = random_seed
 
-    def cleanup(self):
+    def check_write_dir_empty(self):
+        for fn in os.listdir(self._writedir):
+            if ospath.splitext(fn)[-1] == f'.{self._fmt}':
+                return False
+        return True
+
+    def cleanup(self, write_dir=None):
         """
-        Move all image files (with '.bmp' extension) in write_dir to cleanup_dir if it is not None, else remove them
+        Move all image files (extension matching image_format) in write_dir
+        to cleanup_dir if it is not None, else remove them
         """
-        for image_fn in [fn for fn in os.listdir(self._writedir) if os.path.splitext(fn)[-1] == '.bmp']:
+        write_dir = write_dir if write_dir is not None and os.path.isdir(write_dir) else self._writedir
+        for image_fn in [fn for fn in os.listdir(write_dir) if ospath.splitext(fn)[-1] == f'.{self._fmt}']:
             try:
                 if self._cleanupdir is None:
-                    os.remove(os.path.join(self._writedir, image_fn))
+                    os.remove(ospath.join(write_dir, image_fn))
                 else:
-                    shutil.move(os.path.join(self._writedir, image_fn), os.path.join(self._cleanupdir, image_fn))
+                    shutil.move(ospath.join(write_dir, image_fn), ospath.join(self._cleanupdir, image_fn))
             except OSError:
-                print('failed to clean up %s' % image_fn)
+                print('failed to clean up', image_fn)
 
-    def show_images(self, images, imgids):
+    def show_images(self, images, imgids, reps=None):
         """
         Reset blockwriter to show the given images
         :param images: array of images
@@ -108,41 +228,57 @@ class BlockWriter:
         """
         nimgs = len(images)
         assert len(imgids) == nimgs
-        if self._blocksize is not None:
-            assert nimgs >= self._blocksize, 'not enough images for block'
+        if self._blocksize is not None and nimgs >= self._blocksize:
+            print('warning: not enough images for block', f'({nimgs} vs. {self._blocksize})')
+        images = np.array([utils.resize_image(im, self._imsize) for im in images])
 
         self._images = images
         self._imgids = imgids
         self._nimgs = nimgs
-        self._remaining_times_toshow = np.full(len(images), self._reps, dtype=int)
+        if isinstance(reps, int):
+            self._remaining_times_toshow = np.full(len(images), reps, dtype=int)
+        else:
+            try:
+                self._remaining_times_toshow = reps.astype(int)
+            except (ValueError, AttributeError):
+                if reps is not None:
+                    print(f'ignored invalid value for reps: {reps}')
+            self._remaining_times_toshow = np.full(len(images), self._reps, dtype=int)
         self._imgid_2_local_idx = {imgid: i for i, imgid in enumerate(imgids)}
         self._iloop = -1
 
-    def write_block(self):
+    def write_block(self, wait_for_empty=-1):
         """
         Writes a block of images to disk
+        :param wait_for_empty: float
+            if positive, check write_dir every so many seconds until it is empty
         :return:
             imgfn_2_imgid: dict mapping each image filename written to each image id written
         """
         assert self._images is not None, 'no images loaded'
-        if self._blocksize is not None:
-            blocksize = self._blocksize
-        else:
-            blocksize = len(self._images)
-
-        self._iblock += 1
+        blocksize = self._blocksize if self._blocksize is not None else len(self._images)
+        self.iblock += 1
         self._iloop += 1
+
+        try:
+            wait_for_empty = float(wait_for_empty)
+            if wait_for_empty > 0:
+                while not self.check_write_dir_empty():
+                    sleep(wait_for_empty)
+        except ValueError:
+            pass
 
         view = self._random_generator.permutation(self._nimgs)
         prioritized_view = np.argsort(self._remaining_times_toshow[view])[::-1][:blocksize]
         block_images = self._images[view[prioritized_view]]
         block_imgids = self._imgids[view[prioritized_view]]
-        block_ids = ['block%03d_%03d' % (self._iblock, i) for i in range(blocksize)]
-        block_imgfns = ['%s_%s.bmp' % (blockid, imgid) for blockid, imgid in zip(block_ids, block_imgids)]
+        block_ids = [f'block{self._iblock:03d}_{i:03d}' for i in range(blocksize)]
+        block_imgfns = [f'{blockid}_{imgid}.{self._fmt}' for blockid, imgid in zip(block_ids, block_imgids)]
         imgfn_2_imgid = {name: imgid for name, imgid in zip(block_imgfns, block_imgids)}
 
         # images written here
-        utils.write_images(block_images, block_imgfns, self._writedir, self._imsize)
+        utils.write_images(block_images, block_imgfns, self._writedir,
+                           size=self._imsize, grayscale=self._grayscale, fmt=self._fmt)
 
         self._curr_block_imgfns = block_imgfns
         self._imgfn_2_imgid = imgfn_2_imgid
@@ -155,9 +291,17 @@ class BlockWriter:
         """
         for imgfn in self._curr_block_imgfns:
             try:
-                shutil.copyfile(os.path.join(self._writedir, imgfn), os.path.join(self._backupdir, imgfn))
+                shutil.copyfile(ospath.join(self._writedir, imgfn), ospath.join(self._backupdir, imgfn))
             except OSError:
-                print('%s: failed to backup image %s' % (self.__class__.__name__, imgfn))
+                print(f'{self.__class__.__name__}: failed to backup images {imgfn}')
+
+    def backup_image_filenames(self):
+        im_fns = np.array(self._curr_block_imgfns)
+        with h5.File(os.path.join(self._backupdir, f'block{self._iblock:03d}-im_names.h5'), 'w') as f:
+            try:
+                f.create_dataset('image_names', data=im_fns.astype(np.bytes_))
+            except UnicodeEncodeError:    # unicode chars in im_fns
+                utils.save_unicode_array_to_h5(f, 'image_names', im_fns)
 
     def show_again(self, imgids):
         """
@@ -169,12 +313,15 @@ class BlockWriter:
                 local_idx = self._imgid_2_local_idx[imgid]
                 self._remaining_times_toshow[local_idx] += 1
             except KeyError:
-                print('%s: warning: cannot show image %s again; image is not registered'
-                      % (self.__class__.__name__, imgid))
+                print(f'{self.__class__.__name__}: warning: cannot show image {imgid} again; image is not registered')
 
     @property
     def iblock(self):
         return self._iblock
+
+    @iblock.setter
+    def iblock(self, iblock):
+        self._iblock = iblock
 
     @property
     def iloop(self):
@@ -182,6 +329,8 @@ class BlockWriter:
 
     @property
     def done(self):
+        if self._remaining_times_toshow is None:
+            return True
         return np.all(self._remaining_times_toshow <= 0)
 
     @property
@@ -190,7 +339,8 @@ class BlockWriter:
 
     @block_size.setter
     def block_size(self, block_size):
-        assert isinstance(block_size, int) or block_size is None, 'block_size must be an integer or None'
+        assert isinstance(block_size, int) or block_size is None, \
+            f'block_size must be an integer or None; got {block_size}'
         self._blocksize = block_size
 
     @property
@@ -218,7 +368,9 @@ class BlockWriter:
 
 class WithIOScorer(Scorer):
     """ Base class for a Scorer that writes images to disk and waits for scores """
-    def __init__(self, write_dir, log_dir, image_size=None, random_seed=None, **kwargs):
+    def __init__(self, write_dir, log_dir,
+                 image_size=None, image_format='png', backup_images=True,
+                 random_seed=None, **kwargs):
         """
         :param write_dir: str (path), directory to which to write images
         :param log_dir: str (path), directory to which to write log files
@@ -227,22 +379,22 @@ class WithIOScorer(Scorer):
             when set, the scorer will have deterministic behavior (when writing images in a pseudo-random order)
             default is an arbitrary integer
         """
-        # super(WithIOScorer, self).__init__(log_dir)
-        Scorer.__init__(self, log_dir)
+        Scorer.__init__(self, log_dir, **kwargs)    # explicite call to superclass to avoid confusing MRO
 
-        assert os.path.isdir(write_dir), 'invalid write directory: %s' % write_dir
+        assert ospath.isdir(write_dir), f'invalid write directory: {write_dir}'
         self._writedir = write_dir
         self._score_shape = tuple()    # use an empty tuple to indicate shape of score is a scalar (not even a 1d array)
         self._curr_nimgs = None
         self._curr_listscores = None
         self._curr_cumuscores = None
-        self._curr_nscores = None
-        self._curr_scores_mat = None
         self._curr_imgfn_2_imgid = None
         self._istep = -1
 
-        self._blockwriter = BlockWriter(self._writedir, self._logdir, random_seed=random_seed)
+        self._blockwriter = BlockWriter(
+            self._writedir, self._logdir, image_format=image_format,
+            random_seed=random_seed)
         self._blockwriter.image_size = image_size
+        self._backup_ims = bool(backup_images)
 
         self._require_response = False
         self._verbose = False
@@ -254,8 +406,7 @@ class WithIOScorer(Scorer):
             assert nimgs >= self._blockwriter.block_size, 'too few images for block'
         for imgid in image_ids:
             if not isinstance(imgid, str):
-                raise ValueError('image_id should be str; got %s ' % str(type(imgid)))
-        image_ids = utils.make_ids_unique(image_ids)
+                raise ValueError(f'image_id should be str; got {type(imgid)}')
         self._istep += 1
 
         self._curr_imgids = np.array(image_ids, dtype=str)
@@ -264,7 +415,10 @@ class WithIOScorer(Scorer):
         blockwriter = self._blockwriter
         blockwriter.show_images(self._curr_images, self._curr_imgids)
         self._curr_listscores = [[] for _ in range(nimgs)]
-        self._curr_cumuscores = np.zeros((nimgs, *self._score_shape), dtype='float')
+        try:
+            self._curr_cumuscores = np.zeros((nimgs, *self._score_shape), dtype='float')
+        except ValueError:        # if score_shape is the initial placeholder
+            pass
         self._curr_nscores = np.zeros(nimgs, dtype='int')
         while not blockwriter.done:
             t0 = time()
@@ -272,11 +426,12 @@ class WithIOScorer(Scorer):
             self._curr_imgfn_2_imgid = blockwriter.write_block()
             t1 = time()
 
-            blockwriter.backup_images()
+            if self._backup_ims:
+                blockwriter.backup_images()
             t2 = time()
 
-            scores, scores_local_idx, novel_imgfns = self._get_scores()
-            if self._score_shape == (-1,) and len(scores) > 0:    # if score_shape is the inital placeholder
+            scores, scores_local_idx, novel_imgfns = self._with_io_get_scores()
+            if self._score_shape == () and len(scores) > 0:    # if score_shape is the initial placeholder
                 self._score_shape = scores[0].shape
                 self._curr_cumuscores = np.zeros((nimgs, *self._score_shape), dtype='float')
             for score, idx in zip(scores, scores_local_idx):
@@ -293,12 +448,12 @@ class WithIOScorer(Scorer):
 
             # report delays
             if self._verbose:
-                print(('block %03d time: total %.2fs | ' +
-                       'write images %.2fs  backup images %.2fs  ' +
-                       'wait for results %.2fs  clean up images %.2fs  (loop %d)') %
-                      (blockwriter.iblock, t4 - t0, t1 - t0, t2 - t1, t3 - t2, t4 - t3, blockwriter.iloop))
+                print(f'block {blockwriter.iblock:03d} time: total {t4 - t0:.2f}s | ' +
+                      f'write images {t1 - t0:.2f}s  ' +
+                      (f'backup images {t2 - t1:.2f}s  ' if self._backup_ims else '') +
+                      f'wait for results {t3 - t2:.2f}s  clean up images {t4 - t3:.2f}s  (loop {blockwriter.iloop})')
                 if len(novel_imgfns) > 0:
-                    print('novel images:  {}'.format(sorted(novel_imgfns)))
+                    print('novel images: ', sorted(novel_imgfns))
 
         # consolidate & save data before returning
         # calculate average score
@@ -318,10 +473,10 @@ class WithIOScorer(Scorer):
                 scores_mat[i, ..., :self._curr_nscores[i]] = np.array(self._curr_listscores[i]).T
         # record scores
         self._curr_scores = scores
-        self._curr_scores_mat = scores_mat
+        self._curr_scores_reps = scores_mat
         return scores    # shape of (nimgs, [nchannels,])
 
-    def _get_scores(self):
+    def _with_io_get_scores(self):
         """
         Method for obtaining scores for images shown, for ex by reading a datafile from disk
         :return:
@@ -335,15 +490,15 @@ class WithIOScorer(Scorer):
         if self._istep < 0:
             raise RuntimeWarning('no scores evaluated; scores not saved')
         else:
-            savefpath = os.path.join(self._logdir, 'scores_end_block%03d.npz' % self._blockwriter.iblock)
+            savefpath = ospath.join(self._logdir, f'scores_end_block{self._blockwriter.iblock:03d}.npz')
             save_kwargs = {'image_ids': self._curr_imgids, 'scores': self._curr_scores,
-                           'scores_mat': self._curr_scores_mat, 'nscores': self._curr_nscores}
-            print('saving scores to %s' % savefpath)
+                           'scores_reps': self._curr_scores_reps, 'nscores': self._curr_nscores}
+            print('saving scores to', savefpath)
             utils.save_scores(savefpath, save_kwargs)
 
     @property
     def parameters(self):
-        params = super(WithIOScorer, self).parameters
+        params = super().parameters
         params.update({'image_size': self._blockwriter.image_size,
                        'blockwriter_random_seed': self._blockwriter.random_seed})
         return params
@@ -356,10 +511,14 @@ class EPhysScorer(WithIOScorer):
         - responses in the matrix 'tEvokedResp' with shape (imgs, channels), aligned to stimulusID
     """
 
+    _available_score_formats = ('h5', 'mat')
     _supported_match_imgfn_policies = ('strict', 'loose')
 
-    def __init__(self, write_dir, log_dir, block_size=None, channel=None, reps=1, image_size=None, random_seed=None,
-                 mat_dir=None, require_response=False, verbose=True, match_imgfn_policy='strict'):
+    def __init__(self, write_dir, log_dir, score_dir=None, score_format='mat',
+                 block_size=None, channel=None, reps=1,
+                 image_size=None, image_format='png', backup_images=True,
+                 require_response=False, match_imgfn_policy='strict',
+                 random_seed=None, verbose=True):
         """
         :param write_dir: str (path), directory to which to write images
         :param log_dir: str (path), directory to which to write log files
@@ -377,13 +536,15 @@ class EPhysScorer(WithIOScorer):
         :param random_seed: int
             when set, the scorer will have deterministic behavior (when writing images in a pseudo-random order)
             default is an arbitrary integer
-        :param mat_dir: str (path), directory in which to expect the .mat file; default is write_dir
+        :param score_dir: str (path), directory in which to expect the .mat file; default is write_dir
         :param require_response: bool
             if True, images are shown until all receive at least one score
         :param verbose: bool, whether to report delays
         :param match_imgfn_policy: see `_match_imgfn_2_imgid`
         """
-        super(EPhysScorer, self).__init__(write_dir, log_dir, image_size, random_seed)
+        super().__init__(
+            write_dir, log_dir, image_size=image_size, image_format=image_format,
+            backup_images=backup_images, random_seed=random_seed)
         self._blockwriter.reps = reps
         self._blockwriter.block_size = block_size
 
@@ -406,17 +567,20 @@ class EPhysScorer(WithIOScorer):
         else:
             raise ValueError('channel must be one of int, iterable of ints, None, or Ellipsis')
 
-        if mat_dir is None:
+        if score_dir is None:
             self._respdir = write_dir
         else:
-            assert os.path.isdir(mat_dir), 'invalid response directory: %s' % mat_dir
-            self._respdir = mat_dir
+            assert ospath.isdir(score_dir), f'invalid response directory: {score_dir}'
+            self._respdir = score_dir
+        assert score_format in self._available_score_formats, f'invalid score format {score_format}; ' \
+            f'options: {self._available_score_formats}'
+        self._fmt = score_format
 
         assert isinstance(require_response, bool), 'require_response must be True or False'
         assert isinstance(verbose, bool), 'verbose must be True or False'
-        assert match_imgfn_policy in self._supported_match_imgfn_policies,\
-            'match_imgfn_policy %s not supported; must be one of %s'\
-            % (match_imgfn_policy, str(self._supported_match_imgfn_policies))
+        assert match_imgfn_policy in self._supported_match_imgfn_policies, \
+            f'match_imgfn_policy {match_imgfn_policy} not supported; ' \
+            f'must be one of {self._supported_match_imgfn_policies}'
         self._match_imgfn_policy = match_imgfn_policy
         self._verbose = verbose
         self._require_response = require_response
@@ -430,13 +594,13 @@ class EPhysScorer(WithIOScorer):
             try:
                 return self._curr_imgfn_2_imgid[result_imgfn]
             except KeyError:
-                imgid = os.path.splitext(result_imgfn)[0]
+                imgid = ospath.splitext(result_imgfn)[0]
                 if imgid.find('block') == 0:
                     imgid = imgid[imgid.find('_') + 1:]
                     imgid = imgid[imgid.find('_') + 1:]
                 return imgid
 
-    def _get_scores(self):
+    def _with_io_get_scores(self):
         """
         :return:
             organized_scores: list of scores that match one of the expected image fns; see `_match_imgfn_2_imgid()`
@@ -447,17 +611,31 @@ class EPhysScorer(WithIOScorer):
         t0 = time()
 
         # wait for matf
-        matfn = 'block%03d.mat' % self._blockwriter.iblock
-        matfpath = os.path.join(self._respdir, matfn)
-        print('waiting for %s' % matfn)
-        while not os.path.isfile(matfpath):
-            sleep(0.001)
+        score_fn = f'block{self._blockwriter.iblock:03d}.{self._fmt}'
+        score_fp = ospath.join(self._respdir, score_fn)
+        print('waiting for', score_fp)
+        while not ospath.isfile(score_fp):
+            sleep(0.1)
         sleep(0.5)    # ensures mat file finish writing
         t1 = time()
 
         # load .mat file results
-        result_imgfns, scores = utils.load_block_mat(matfpath)
-        #    select the channel(s) to use
+        if self._fmt == 'h5':
+            block_idc, scores = utils.load_h5_score_file(score_fp)
+            imfns = np.array(sorted(self._blockwriter._curr_block_imgfns))
+            if block_idc is None:
+                assert len(scores) == len(imfns), \
+                    'scores must correspond to imfns if no indices in ' \
+                    f'score file; got len {len(scores)} vs. {len(imfns)}'
+            else:
+                imfns = imfns[block_idc]
+            result_imfns = imfns
+        elif self._fmt == 'mat':
+            result_imfns, scores = utils.load_block_mat(score_fp)
+        else:
+            raise RuntimeError(f'loading scores is not implemented for format {self._fmt}')
+
+#    select the channel(s) to use
         if self._channel is None:
             scores = np.mean(scores, axis=-1)
         elif hasattr(self._channel, '__iter__'):
@@ -470,14 +648,17 @@ class EPhysScorer(WithIOScorer):
             scores = scores_new
         else:
             scores = scores[:, self._channel]
-        print('read from %s: stimulusID %s  tEvokedResp %s' % (matfn, str(result_imgfns.shape), str(scores.shape)))
+        if self._verbose:
+            print(f'read from {score_fn}: '
+                  f'image filenames shape {result_imfns.shape} '
+                  f'scores shape {scores.shape}')
         t2 = time()
 
         # organize results
         organized_scores = []
         scores_local_idx = []
         novel_imgfns = []
-        for result_imgfn, score in zip(result_imgfns, scores):
+        for result_imgfn, score in zip(result_imfns, scores):
             try:
                 imgid = self._match_imgfn_2_imgid(result_imgfn)
                 local_idx = imgid_2_local_idx[imgid]
@@ -487,121 +668,26 @@ class EPhysScorer(WithIOScorer):
                 novel_imgfns.append(result_imgfn)
         t3 = time()
 
-        print('wait for .mat file %.2fs  load .mat file %.2fs  organize results %.2fs' %
-              (t1 - t0, t2 - t1, t3 - t2))
+        print(f'wait for .mat file {t1 - t0:.2f}s  load .mat file {t2 - t1:.2f}s  organize results {t3 - t2:.2f}s')
         return organized_scores, scores_local_idx, novel_imgfns
 
     @property
     def parameters(self):
-        params = super(EPhysScorer, self).parameters
+        params = super().parameters
         params.update({'block_size': self._blockwriter.block_size, 'channel': self._channel,
-                       'reps': self._blockwriter.reps})
+                       'reps': self._blockwriter.reps, 'score_format': self._fmt})
         return params
 
 
 class WithIODummyScorer(WithIOScorer):
     def __init__(self, write_dir, log_dir):
-        super(WithIODummyScorer, self).__init__(write_dir, log_dir)
+        super().__init__(write_dir, log_dir)
 
-    def _get_scores(self):
+    def _with_io_get_scores(self):
         return np.ones(self._curr_nimgs), np.arange(self._curr_nimgs), []
 
 
-class ShuffledEPhysScorer(EPhysScorer):
-    """
-    Shuffles scores returned by EPhysScorer; for use as a control experiment
-    """
-
-    _supported_match_imgfn_policies = ('strict', 'loose', 'gen_nat', 'no_check')
-
-    def __init__(self, *args, shuffle_first_n=None, match_imgfn_policy='loose', **kwargs):
-        """
-        :param shuffle_first_n: only shuffle the first n responses; default is to shuffle all
-        :param match_imgfn_policy: 'strict', 'loose', 'gen_nat', or 'no_check'
-        """
-        super(ShuffledEPhysScorer, self).__init__(*args, **kwargs)
-        # for shuffling, use a separate random generator from the one generator in EPhysScorer
-        self._shuffle_random_seed = self._blockwriter.random_seed
-        self._random_generator = np.random.RandomState(seed=self._shuffle_random_seed)
-        print('%s: shuffle random seed set to %d' % (self.__class__.__name__, self._shuffle_random_seed))
-        if shuffle_first_n is not None:
-            self._first = int(shuffle_first_n)
-        else:
-            self._first = None
-        assert match_imgfn_policy in self._supported_match_imgfn_policies,\
-            'match_imgfn_policy %s not supported; must be one of %s'\
-            % (match_imgfn_policy, str(self._supported_match_imgfn_policies))
-        self._match_imgfn_policy = match_imgfn_policy
-
-        self._verbose = False
-
-        # specifically used in self._match_imgfn_2_imgid()
-        self._matcher_istep = self._istep - 1
-        self._matcher_curr_idc = None
-        self._matcher_curr_gen_idc = None
-        self._matcher_curr_nat_idc = None
-        self._matcher_curr_igen = None
-        self._matcher_curr_inat = None
-        self._matcher_curr_iall = None
-
-    def _match_imgfn_2_imgid(self, result_imgfn):
-        if self._match_imgfn_policy in ('strict', 'loose'):
-            return super(ShuffledEPhysScorer, self,)._match_imgfn_2_imgid(result_imgfn)
-        # match generated and natural images separately, but make no distinction within each category
-        # behavior is undefined if # of gen and nat images expected is not equal to the same received
-        elif self._match_imgfn_policy == 'gen_nat':
-            # when step advanced, reinitialize
-            if self._matcher_istep < self._istep:
-                self._matcher_istep = self._istep
-                self._matcher_curr_idc = np.arange(self._curr_nimgs)
-                is_generated = np.array(['gen' in imgid for imgid in self._curr_imgids], dtype=bool)
-                gen_idc = self._matcher_curr_idc[is_generated]
-                nat_idc = self._matcher_curr_idc[~is_generated]
-                gen_idc = gen_idc[np.argsort(self._curr_nscores[is_generated])]
-                nat_idc = nat_idc[np.argsort(self._curr_nscores[~is_generated])]
-                self._matcher_curr_gen_idc = gen_idc
-                self._matcher_curr_nat_idc = nat_idc
-                self._matcher_curr_igen = 0
-                self._matcher_curr_inat = 0
-            if 'gen' in result_imgfn:
-                imgid = self._curr_imgids[self._matcher_curr_gen_idc[self._matcher_curr_igen]]
-                self._matcher_curr_igen += 1
-                self._matcher_curr_igen %= len(self._matcher_curr_gen_idc)
-            else:
-                imgid = self._curr_imgids[self._matcher_curr_nat_idc[self._matcher_curr_inat]]
-                self._matcher_curr_inat += 1
-                self._matcher_curr_inat %= len(self._matcher_curr_nat_idc)
-            return imgid
-        # match completely arbitrarily
-        elif self._match_imgfn_policy == 'no_check':
-            if self._matcher_istep < self._istep:
-                self._matcher_istep = self._istep
-                self._matcher_curr_idc = np.arange(self._curr_nimgs)
-                self._matcher_curr_iall = 0
-            imgid = self._curr_imgids[self._matcher_curr_idc[self._matcher_curr_iall]]
-            self._matcher_curr_iall += 1
-            self._matcher_curr_iall %= self._curr_nimgs
-            return imgid
-
-    def score(self, *args, **kwargs):
-        scores = super(ShuffledEPhysScorer, self).score(*args, **kwargs)
-
-        shuffled_view = np.arange(len(scores))
-        if self._first is None:
-            self._random_generator.shuffle(shuffled_view)
-        else:
-            self._random_generator.shuffle(shuffled_view[:self._first])
-        shuffled_scores = scores[shuffled_view]
-        return shuffled_scores
-
-    @property
-    def parameters(self):
-        params = super(ShuffledEPhysScorer, self).parameters
-        params.update({'shuffle_random_seed': self._shuffle_random_seed})
-        return params
-
-
-get_scorer = {'ephys': EPhysScorer, 'dummy': WithIODummyScorer, 'shuffled_ephys': ShuffledEPhysScorer}
+get_scorer = {'ephys': EPhysScorer, 'dummy': WithIODummyScorer}
 defined_scorers = tuple(get_scorer.keys())
 
 

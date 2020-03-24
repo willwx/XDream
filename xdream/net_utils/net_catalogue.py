@@ -3,7 +3,7 @@ Database of neural networks to support easy API
 To add a new network, edit `net_paths`, `net_io_layers`,
     `all_classifiers`/`all_generators`, and `net_scales`
 """
-from os.path import join, exists, isfile
+from os.path import join, exists
 from numpy import array
 from .local_settings import nets_dir
 
@@ -29,7 +29,7 @@ net_paths = {
 _deepsim_layers = ('norm1', 'norm2', 'conv3', 'conv4', 'pool5', 'fc6', 'fc7', 'fc8')
 for n in _deepsim_layers:
     net_paths['caffe'][f'deepsim-{n}'] = {
-        'definition': join('prototxt', n, 'generator_no_batch.prototxt'),
+        'definition': join(nets_dir, 'caffe', 'deepsim', n, 'generator_no_batch.prototxt'),
         'weights': join(nets_dir, 'caffe', 'deepsim', n, 'generator.caffemodel')
     }
     net_paths['pytorch'][f'deepsim-{n}'] = {

@@ -1,7 +1,10 @@
 import os
 from shutil import copyfile
-from time import time
+from time import time, sleep
+
+import h5py as h5
 import numpy as np
+
 import CNNScorers
 import Optimizers
 import Scorers
@@ -11,11 +14,279 @@ from Logger import Tee
 np.set_printoptions(precision=4, suppress=True)
 
 
+class ReferenceImagesLoader:
+    image_extensions = ('.bmp', '.jpg', '.png', '.tif', '.tiff', '.jpeg')
+
+    def __init__(self, reference_images_dir, dynamic_reference_images_dir=None, n_reference_images=None,
+                 random_seed=None, shuffle=True, max_recursion_depth=None,
+                 sep_replacer='-', crop_center_square=True, max_n_loaded=500, verbose=False,
+                 max_n_dynref=None, dynref_ref_ratio=1,
+                 cache_dir='cache', use_cache=True, save_cache=False, idx=None):
+        """
+        # TODO
+        :param reference_images_dir:  str (path)
+            directory containing "natural"/reference images to show
+            interleaved with synthetic stimuli during the experiment
+            default is to not show natural images
+        :param dynamic_reference_images_dir:
+        :param n_reference_images: int
+            number of natural images to show per step; default is not to show
+        :param random_seed:
+        :param shuffle:
+        :param max_recursion_depth:
+        :param sep_replacer:
+        :param crop_center_square:
+        :param max_n_loaded:
+        :param verbose:
+        :param max_n_dynref:
+        :param dynref_ref_ratio:
+        :param cache_dir:
+        :param use_cache:
+        :param idx:
+        """
+        assert os.path.isdir(reference_images_dir)
+        if dynamic_reference_images_dir is not None:
+            dynamic_reference_images_dir = str(dynamic_reference_images_dir)
+        self._refimdir = str(reference_images_dir)
+        self._dynrefimdir = dynamic_reference_images_dir
+        self._max_n_dynref = None if max_n_dynref is None else int(max_n_dynref)
+        self._dynref_rps_seen = set()
+        self._dynref_ref_ratio = float(dynref_ref_ratio)
+        if n_reference_images is None:
+            self._nrefims = None
+        else:
+            assert n_reference_images >= 1, f'invalid number of requested reference images: {n_reference_images}'
+            assert n_reference_images <= max_n_loaded, \
+                f'requested more reference images {n_reference_images} than max number of loaded images {max_n_loaded}'
+            self._nrefims = int(n_reference_images)
+        if max_recursion_depth is None:
+            self._maxrecur = None
+        else:
+            self._maxrecur = int(max_recursion_depth)
+        self._crop_center = bool(crop_center_square)
+        self._max_n_loaded = max(0, int(max_n_loaded))
+        self._verbose = bool(verbose)
+        self._seprep = str(sep_replacer)
+        self._idx = idx if idx is None else int(idx)
+        self._idx_str = '' if self._idx is None else f' {self._idx:d}'
+
+        self._all_refimrpaths = None
+        self._all_refimids = None
+        self._prepare_refim_catalogue(use_cache, cache_dir, save_cache)
+        self._n_all_refims = len(self._all_refimids)
+        if self._n_all_refims == 0:
+            raise RuntimeError(f'no images found in reference images directory {reference_images_dir}')
+        if self._nrefims is None:
+            self._nrefims = min(self._n_all_refims, self._max_n_loaded)
+        self._all_refims_is_valid = np.ones(self._n_all_refims, dtype=bool)
+
+        self._shuffle = bool(shuffle)
+        if self._shuffle:
+            if random_seed is None:
+                random_seed = np.random.randint(100000)
+                print(f'{self.__class__.__name__}{self._idx_str}: random seed not provided, '
+                      f'using {random_seed} for reproducibility')
+            else:
+                print(f'{self.__class__.__name__}{self._idx_str}: random seed set to {random_seed}')
+            self._random_seed = random_seed
+            self._random_generator = np.random.RandomState(seed=random_seed)
+        else:
+            self._random_seed = None
+            self._random_generator = None
+
+        self._curr_refims = None
+        self._curr_refimids = None
+        self._all_view = np.arange(self._n_all_refims)
+        if self._shuffle:
+            self._random_generator.shuffle(self._all_view)
+        self._i_toshow = 0
+        self._epoch = 0
+        self._dynref_epoch = 0
+        self._i_loaded = -1
+        self._loaded_refims = {'stat': {}, 'dyn': {}}
+        self._loaded_refimids = []
+        self.refresh_images()
+
+    def _find_refims_recursively(self, curr_rpath='', curr_depth=0):
+        if self._maxrecur is not None and curr_depth > self._maxrecur:
+            return
+
+        curr_wd = os.path.join(self._refimdir, curr_rpath)
+        refstimrpaths = []
+        for fn in os.listdir(curr_wd):
+            if os.path.isdir(os.path.join(curr_wd, fn)):
+                refstimrpaths += self._find_refims_recursively(curr_rpath=curr_rpath+fn+os.sep,
+                                                               curr_depth=curr_depth+1)
+            elif fn[fn.rfind('.'):].lower() in self.image_extensions:
+                refstimrpaths.append(curr_rpath + fn)
+        return refstimrpaths
+
+    def _prepare_refim_catalogue(self, use_cache, cache_dir, save_cache=True):
+        loaded_cache = False
+        cache_fpath = os.path.join(cache_dir, 'reference_images.hdf5')
+        refimdir_str = self._refimdir.replace(os.sep, '|') + '|' + \
+            ('' if not self._maxrecur else f'maxrecur{self._maxrecur:d}_') + f'sep{self._seprep}'
+        if not os.path.isdir(cache_dir):
+            try:
+                os.mkdir(cache_dir)
+            except OSError:
+                print(f'{self.__class__.__name__}{self._idx_str}: cannot create cache directory; not saving cache file')
+                save_cache = False
+
+        refimdir_mtime = os.path.getmtime(self._refimdir)
+        if use_cache and os.path.isfile(cache_fpath):
+            with h5.File(cache_fpath, 'r') as f:
+                try:
+                    cached_mtime = np.array(f[f'{refimdir_str}/mtime'])
+                    if cached_mtime != refimdir_mtime:
+                        use_cache = False
+                except KeyError:
+                    use_cache = False
+
+            if use_cache:
+                with h5.File(cache_fpath, 'r') as f:
+                    try:
+                        self._all_refimrpaths = np.array(f[f'{refimdir_str}/rpaths']).astype(str)
+                        self._all_refimids = np.array(f[f'{refimdir_str}/ids']).astype(str)
+                        loaded_cache = True
+                    except KeyError:  # no cached result
+                        pass
+
+        if not loaded_cache:
+            self._all_refimrpaths = utils.sort_nicely(self._find_refims_recursively())
+            self._all_refimids = utils.make_unique_ids(self._all_refimrpaths,
+                                                       remove_extension=True, sep_replacer=self._seprep)
+            if save_cache:
+                with h5.File(cache_fpath, 'a') as f:
+                    if refimdir_str in f.keys():
+                        del f[refimdir_str]
+                    f.create_dataset(f'{refimdir_str}/rpaths', data=np.array(self._all_refimrpaths).astype('S'))
+                    f.create_dataset(f'{refimdir_str}/ids', data=np.array(self._all_refimids).astype('S'))
+                    f.create_dataset(f'{refimdir_str}/mtime', data=refimdir_mtime)
+
+    def _check_add_to_buffer(self, im, imid, is_dyn=False):
+        if self._max_n_loaded > 0:
+            dyn_key = ('stat', 'dyn')[is_dyn]
+            self._loaded_refims[dyn_key][imid] = im
+            self._i_loaded += 1
+            if self._i_loaded >= self._max_n_loaded:
+                i_rolled = self._i_loaded % len(self._loaded_refimids)
+                dyn_key2, imid2 = self._loaded_refimids[i_rolled]
+                del self._loaded_refims[dyn_key2][imid2]
+                self._loaded_refimids[i_rolled] = (dyn_key, imid)
+            else:
+                self._loaded_refimids.append((dyn_key, imid))
+
+    def refresh_images(self):
+        curr_refims = []
+        curr_refimids = []
+
+        # add images until nrefims satisfied
+        while len(curr_refims) < self._nrefims:
+            n_to_show = self._nrefims - len(curr_refims)
+
+            # dynamic reference image dir takes precedence
+            if self._dynrefimdir and os.path.isdir(self._dynrefimdir):
+                dynref_rps_added = []
+                dynref_rps_unseen = set(os.listdir(self._dynrefimdir)) - self._dynref_rps_seen
+                invalid_rps = set(rp for rp in dynref_rps_unseen
+                                  if os.path.splitext(rp)[1].lower() not in self.image_extensions)
+                self._dynref_rps_seen |= invalid_rps
+                dynref_rps_unseen -= invalid_rps
+                n_dynref_to_show = n_to_show if self._max_n_dynref is None \
+                    else min(n_to_show, self._max_n_dynref - len(curr_refims))
+                if dynref_rps_unseen and n_dynref_to_show > 0:
+                    for imfn, i in zip(dynref_rps_unseen, range(n_dynref_to_show)):
+                        self._dynref_rps_seen.add(imfn)
+                        imid = os.path.splitext(imfn)[0]
+                        try:    # if already loaded and cached
+                            curr_refims.append(self._loaded_refims['dyn'][imid])
+                            curr_refimids.append(imid)
+                            dynref_rps_added.append(imfn)
+                        except KeyError:
+                            im = utils.read_image(os.path.join(self._dynrefimdir, imfn))
+                            if im is not None:
+                                if self._crop_center:
+                                    im = utils.center_crop(im)
+                                self._check_add_to_buffer(im, imid, is_dyn=True)
+                                curr_refims.append(im)
+                                curr_refimids.append(imid)
+                                dynref_rps_added.append(imfn)
+                    if len(dynref_rps_added) > 0:
+                        print('added dynref images:', dynref_rps_added)
+                    continue    # check dyn ref again; only check stat ref if no dyn imids processed
+
+            # static reference image dir
+            for i in range(n_to_show):
+                idx_toshow = self._all_view[self._i_toshow % self._n_all_refims]
+                if self._all_refims_is_valid[idx_toshow]:
+                    rp = self._all_refimrpaths[idx_toshow]
+                    imid = self._all_refimids[idx_toshow]
+                    try:
+                        curr_refims.append(self._loaded_refims['stat'][imid])
+                        curr_refimids.append(imid)
+                    except KeyError:    # not found in loaded images
+                        im = utils.read_image(os.path.join(self._refimdir, rp))
+                        if im is None:    # not a valid image
+                            self._all_refims_is_valid[idx_toshow] = False
+                            print(f'{self.__class__.__name__}{self._idx_str}: invalide reference image: {rp}')
+                        else:
+                            if self._crop_center:
+                                im = utils.center_crop(im)
+                            self._check_add_to_buffer(im, imid)
+                            curr_refims.append(im)
+                            curr_refimids.append(imid)
+
+                # check change of epoch
+                self._i_toshow += 1
+                epoch = self._i_toshow / self._n_all_refims
+                dynref_epoch = epoch * self._dynref_ref_ratio
+                if epoch >= self._epoch + 1:
+                    self._epoch = int(epoch)
+                    if self._shuffle:
+                        self._random_generator.shuffle(self._all_view)
+                if dynref_epoch >= self._dynref_epoch + 1:
+                    self._dynref_epoch = int(dynref_epoch)
+                    self._dynref_rps_seen = set()
+
+        self._curr_refims = curr_refims
+        self._curr_refimids = curr_refimids
+        if self._verbose:
+            print(f'{self.__class__.__name__}{self._idx_str}: showing the following {self._nrefims} reference iamges')
+            print(curr_refimids)
+
+    @property
+    def n_images(self):
+        return self._nrefims
+
+    @property
+    def current_images(self):
+        return self._curr_refims
+
+    @property
+    def current_image_ids(self):
+        return self._curr_refimids
+
+    @property
+    def parameters(self):
+        params = {'reference_images_dir': self._refimdir, 'n_reference_images': self._nrefims, 'shuffle': self._shuffle,
+                  'crop_center_square': self._crop_center}
+        if self._maxrecur is not None:
+            params['max_recursion_depth'] = self._maxrecur
+        if self._maxrecur is None or self._maxrecur > 0:
+            params['sep_replacer'] = self._seprep
+        if self._shuffle:
+            params['random_seed'] = self._random_seed
+        if self._max_n_dynref is not None:
+            params['max_n_dynamic_reference_images'] = self._max_n_dynref
+        return params
+
+
 class ExperimentBase:
     """ Base class for Experiment implementing commonly used routines """
-    def __init__(self, log_dir, optimizer_name, optimizer_parameters, scorer_name, scorer_parameters, nthreads=1,
-                 natural_stimuli_dir=None, n_natural_stimuli=None, save_natural_stimuli_copy=False,
-                 random_seed=None, config_file_path=None):
+    def __init__(self, log_dir, optimizer_name, optimizer_parameters, scorer_name, scorer_parameters,
+                 ref_images_loader_parameters=None, cycle_reference_images=True,
+                 nthreads=1, random_seed=None, config_file_path=None):
         """
         :param log_dir: str (path), directory to which to write experiment log files
         :param optimizer_name: str or iter of strs, see `defined_optimizers` in `Optimizers.py`
@@ -25,14 +296,6 @@ class ExperimentBase:
         :param scorer_name: str, see `defined_scorers` in `Scorers.py`
         :param scorer_parameters: dict, kwargs passed when initializing the scorer
         :param nthreads: int, number of concurrent threads to run; default is 1
-        :param natural_stimuli_dir: str (path)
-            directory containing "natural"/reference images to show
-            interleaved with synthetic stimuli during the experiment
-            default is to not show natural images
-        :param n_natural_stimuli: int, number of natural images to show per step; default is not to show
-        :param save_natural_stimuli_copy: bool
-            make a copy in log_dir of natural images shown; default is to not use
-            do not use; will not save new images if natural stimuli are changed
         :param random_seed: int
             when set, the experiment will have deterministic behavior; default is an arbitrary integer
         :param config_file_path: str (path),
@@ -67,7 +330,7 @@ class ExperimentBase:
                 else:
                     assert len(param) == 1 or len(param) >= nthreads
                     if len(param) > nthreads:
-                        print('note: more values than nthreads passed for %s; ignoring extra values' % k)
+                        print(f'note: more values than nthreads passed for {k}; ignoring extra values')
                     for t in range(nthreads):
                         optimizer_parameterss[t][k] = param[t % len(param)]
         else:
@@ -78,7 +341,7 @@ class ExperimentBase:
             for t in range(nthreads):
                 params = optimizer_parameters[t % len(optimizer_parameters)]
                 assert hasattr(params, 'keys')
-                if 'log_dir' not in optimizer_parameters.keys():
+                if 'log_dir' not in params.keys():
                     params['log_dir'] = log_dir
                 if 'random_seed' not in params:
                     params['random_seed'] = random_seed
@@ -88,11 +351,31 @@ class ExperimentBase:
             scorer_parameters['log_dir'] = log_dir
         if 'random_seed' not in scorer_parameters.keys():
             scorer_parameters['random_seed'] = random_seed
-        assert natural_stimuli_dir is None or os.path.isdir(natural_stimuli_dir)
+        if ref_images_loader_parameters is not None:
+            if not hasattr(ref_images_loader_parameters, 'keys'):
+                err_msg = 'ref_images_loader_parameters should be a dict or a list of dicts'
+                assert hasattr(ref_images_loader_parameters, '__iter__'), err_msg
+                for params in ref_images_loader_parameters:
+                    assert hasattr(params, 'keys'), err_msg
+                refim_loader_paramss = ref_images_loader_parameters[:]
+            else:
+                refim_loader_paramss = [ref_images_loader_parameters]
+            for iparam, params in enumerate(refim_loader_paramss):
+                # if 'random_seed' not in params.keys():
+                #     params['random_seed'] = random_seed
+                if len(refim_loader_paramss) > 1:
+                    params['idx'] = iparam
+        if hasattr(cycle_reference_images, '__len__'):
+            assert len(cycle_reference_images) == 1 or len(cycle_reference_images) == len(refim_loader_paramss),\
+                'cycle_reference_images should be a bool ' \
+                'or list of bools with len 1 or same len as number of requested ref_images_loaders'
+            cycle_refim_flags = [bool(flag) for flag in cycle_reference_images]
+        else:
+            cycle_refim_flags = [bool(cycle_reference_images)]
         # an experiment config file is the file defining experiment parameters, e.g., experiment.py, experiment_CNN.py
         # used for record-keeping
-        assert config_file_path is None or os.path.isfile(config_file_path),\
-            'experiment config file not found: %s' % config_file_path
+        assert config_file_path is None or os.path.isfile(config_file_path), \
+            f'experiment config file not found: {config_file_path}'
 
         self._istep = -1  # score/optimize cycle we are currently at; will count from 0 once experiment starts
         self._nthreads = max(1, int(nthreads))
@@ -106,21 +389,11 @@ class ExperimentBase:
         self._config_fpath = config_file_path
         self._copy_config_file()
 
-        # only used if natural stimuli are attached
-        self._natstimdir = natural_stimuli_dir  # str
-        self._natstimuli = None  # list of images: (w, h, c) arrays, uint8
-        self._natstimids = None  # list of strs
-        self._natstimfns = None  # list of strs
-        self._n_natstim_to_show = 0  # int
-        self._all_natstimids = None  # array of strs
-        self._all_natstimfns = None  # array of strs
-        self._all_natstim_times_shown = None
-        if natural_stimuli_dir is not None and \
-                (n_natural_stimuli is None or
-                 (n_natural_stimuli > 0 and isinstance(n_natural_stimuli, int))):
-            self._load_natural_stimuli(natural_stimuli_dir, size=n_natural_stimuli)
-            if save_natural_stimuli_copy:
-                self._save_natural_stimuli_copy()
+        # attach reference images loader
+        self._ref_images_loaders = None
+        if ref_images_loader_parameters is not None:
+            self._ref_images_loaders = [ReferenceImagesLoader(**params) for params in refim_loader_paramss]
+        self._cycle_refim_flags = cycle_refim_flags
 
         # attach optimizer(s)
         for thread in range(self._nthreads):
@@ -138,122 +411,13 @@ class ExperimentBase:
             scorer = CNNScorers.load_scorer(scorer_name, scorer_parameters)
         self._attach_scorer(scorer)
 
-        # apply random seed
-        if random_seed is None:
-            random_seed = np.random.randint(100000)
-            print('%s: random seed not provided, using %d for reproducibility' %
-                  (self.__class__.__name__, random_seed))
-        else:
-            print('%s: random seed set to %d' % (self.__class__.__name__, random_seed))
-        self._random_generator = np.random.RandomState(seed=random_seed)
-        self._random_seed = random_seed
-
-    def _load_natural_stimuli(self, natstimdir, size=None, natstim_catalogue_fpath=None, shuffle=False):
-        all_natstimfns = utils.sort_nicely(
-            [fn for fn in os.listdir(natstimdir) if '.bmp' in fn or '.jpg' in fn or '.png' in fn
-             or '.tif' in fn or '.tiff' in fn or '.jpeg' in fn or '.JPEG' in fn]
-        )
-        all_natstimnames = [fn[:fn.rfind('.')] for fn in all_natstimfns]
-        nstimuli = len(all_natstimnames)
-        all_natstim_times_shown = np.zeros(nstimuli, dtype=int)
-        if nstimuli == 0:
-            raise Exception('no images found in natual stimulus directory %s' % natstimdir)
-        if size is None:
-            size = nstimuli
-        else:
-            size = int(size)
-
-        # make ids (names mapped to catalogue if any) from names (fn without extension)
-        all_natstimids = all_natstimnames[:]
-        #   try to map filename (no extension) to short id, if catalogue given
-        if natstim_catalogue_fpath is not None:
-            catalogue = np.load(natstim_catalogue_fpath)
-            name_2_id = {name: id_ for name, id_ in zip(catalogue['stimnames'], catalogue['stimids'])}
-            for i, name in enumerate(all_natstimids):
-                try:
-                    all_natstimids[i] = name_2_id[name]
-                except KeyError:
-                    all_natstimids[i] = name
-        #   resolve nonunique ids, if any
-        if nstimuli < size:
-            for i, id_ in enumerate(all_natstimids):
-                icopy = 1
-                new_id = id_
-                while new_id in all_natstimids[:i]:
-                    new_id = '%s_copy%02d' % (id_, icopy)
-                all_natstimids[i] = new_id
-
-        # choose images to load (if nstimuli != size)
-        toshow_args = np.arange(nstimuli)
-        if nstimuli < size:
-            if shuffle:
-                print('note: number of natural images (%d) < requested (%d); sampling with replacement'
-                      % (nstimuli, size))
-                toshow_args = self._random_generator.choice(toshow_args, size=size, replace=True)
-            else:
-                print('note: number of natural images (%d) < requested (%d); repeating images'
-                      % (nstimuli, size))
-                toshow_args = np.repeat(toshow_args, int(np.ceil(size / float(nstimuli))))[:size]
-        elif nstimuli > size:
-            if shuffle:
-                print('note: number of natural images (%d) > requested (%d); sampling (no replacement)'
-                      % (nstimuli, size))
-                toshow_args = self._random_generator.choice(toshow_args, size=size, replace=False)
-            else:
-                print('note: number of natural images (%d) > requested (%d); taking first %d images'
-                      % (nstimuli, size, size))
-                toshow_args = toshow_args[:size]
-        natstimids = [all_natstimids[arg] for arg in toshow_args]
-        natstimfns = [all_natstimfns[arg] for arg in toshow_args]
-        all_natstim_times_shown[toshow_args] += 1
-
-        # load images
-        natstimuli = []
-        for natstimfn in natstimfns:
-            natstimuli.append(utils.read_image(os.path.join(natstimdir, natstimfn)))
-
-        print('showing the following %d natural stimuli loaded from %s:' % (size, natstimdir))
-        print(natstimids)
-
-        # save results
-        self._natstimdir = natstimdir
-        self._natstimuli = natstimuli
-        self._natstimids = natstimids
-        self._natstimfns = natstimfns
-        self._n_natstim_to_show = size
-        self._all_natstimids = np.array(all_natstimids)
-        self._all_natstimfns = np.array(all_natstimfns)
-        self._all_natstim_times_shown = all_natstim_times_shown
-
-    def _save_natural_stimuli_copy(self):
-        assert (self._natstimfns is not None) and (self._natstimdir is not None), \
-            'please load natural stimuli first by calling _load_natural_stimuli()'
-        savedir = os.path.join(self._logdir, 'natural_stimuli')
+    def __del__(self):
         try:
-            os.mkdir(savedir)
-        except OSError as e:
-            if e.errno == 17:
-                raise OSError('trying to save natural stimuli but directory already exists: %s' % savedir)
-            else:
-                raise
-        for fn in self._natstimfns:
-            copyfile(os.path.join(self._natstimdir, fn), os.path.join(savedir, fn))
-
-    def refresh_natural_stimuli(self):
-        """ Refresh natural stimuli with a new set of images from natural_stimuli_dir """
-        view = self._random_generator.permutation(len(self._all_natstimfns))
-        prioritized_view = np.argsort(self._all_natstim_times_shown[view])[:self._n_natstim_to_show]
-        natstimids = list(self._all_natstimids[view[prioritized_view]])
-        natstimfns = list(self._all_natstimfns[view[prioritized_view]])
-        natstimuli = []
-        for natstimfn in natstimfns:
-            natstimuli.append(utils.read_image(os.path.join(self._natstimdir, natstimfn)))
-        print('changing natural stimuli to the following:')
-        print(natstimids)
-        self._natstimuli = natstimuli
-        self._natstimids = natstimids
-        self._natstimfns = natstimfns
-        self._all_natstim_times_shown[view[prioritized_view]] += 1
+            # if many experiments are created (unlikely), logging could exceed max recursion depth
+            self._logger.stop()
+        except (AttributeError, ValueError):
+            # if before full initialization or after log file closed
+            pass
 
     def _attach_optimizer(self, optimizer):
         if self._optimizers is None:
@@ -295,14 +459,13 @@ class ExperimentBase:
 
     @property
     def optimizer(self):
-
         if self._optimizers is None:
             return None
         elif len(self._optimizers) == 1:
             return self._optimizers[0]
         else:
-            raise RuntimeError('more than 1 (%d) optimizers have been loaded; asking for "optimizer" is ambiguous'
-                               % len(self._optimizers))
+            raise RuntimeError(f'multiple ({len(self._optimizers)}) optimizers have been loaded; '
+                               'asking for "optimizer" is ambiguous')
 
     @property
     def optimizers(self):
@@ -313,12 +476,27 @@ class ExperimentBase:
         return self._scorer
 
     @property
-    def natural_stimuli(self):
-        return self._natstimuli
+    def reference_images(self):
+        rtn = []
+        if self._ref_images_loaders is not None:
+            for loader in self._ref_images_loaders:
+                rtn += loader.current_images
+        return rtn
 
     @property
-    def natural_stimuli_ids(self):
-        return self._natstimids
+    def reference_image_ids(self):
+        rtn = []
+        if self._ref_images_loaders is not None:
+            for loader in self._ref_images_loaders:
+                rtn += loader.current_image_ids
+        return rtn
+
+    def check_refresh_ref_ims(self):
+        if self._ref_images_loaders is not None:
+            nflags = len(self._cycle_refim_flags)
+            for iloader, loader in enumerate(self._ref_images_loaders):
+                if self._cycle_refim_flags[iloader % nflags]:
+                    loader.refresh_images()
 
     @property
     def logger(self):
@@ -331,15 +509,28 @@ class ExperimentBase:
     @property
     def parameters(self):
         """ Returns dict storing parameters defining the experiment """
-        params = {'class': self.__class__.__name__, 'log_dir': self._logdir,
-                  'nthreads': self._nthreads, 'random_seed': self._random_seed}
+        params = {'class': self.__class__.__name__, 'log_dir': self._logdir, 'nthreads': self._nthreads}
+        if self._ref_images_loaders is not None:
+            if len(self._ref_images_loaders) > 1:
+                for iloader, loader in enumerate(self._ref_images_loaders):
+                    params[f'reference_image_loader_{iloader:d}'] = loader.parameters
+            else:
+                params['reference_image_loader'] = self._ref_images_loaders[0].parameters
+            nflags = len(self._cycle_refim_flags)
+            if nflags > 1:
+                for iloader in range(len(self._ref_images_loaders)):
+                    params[f'cycle_reference_images_{iloader:d}'] = self._cycle_refim_flags[iloader % nflags]
+            else:
+                params['cycle_reference_images'] = self._cycle_refim_flags[0]
+
         if self._nthreads == 1:
             params['optimizer'] = self.optimizer.parameters
         else:
             for thread in range(self._nthreads):
-                params['optimizer_thread%02d' % thread] = self.optimizers[thread].parameters
+                params[f'optimizer_thread{thread:02d}'] = self.optimizers[thread].parameters
+
         params['scorer'] = self.scorer.parameters
-        params.update({'natural_stimuli_dir': self._natstimdir, 'n_natural_stimuli': self._n_natstim_to_show})
+
         return params
 
 
@@ -350,9 +541,9 @@ class EphysExperiment(ExperimentBase):
     """
     def __init__(self, project_dir, optimizer_name, optimizer_parameters, ichannels,
                  nthreads=1, nchannels_per_thread=None,
-                 mat_dir=None, log_dir=None, image_size=None, reps=None, block_size=None, scorer_parameters=None,
-                 natural_stimuli_dir=None, n_natural_stimuli=None, save_natural_stimuli_copy=False,
-                 cycle_natural_stimuli=True, random_seed=None, config_file_path=None):
+                 score_dir=None, log_dir=None, image_size=None, reps=None, block_size=None, scorer_parameters=None,
+                 ref_images_loader_parameters=None, cycle_reference_images=True,
+                 random_seed=None, config_file_path=None):
         """
         :param project_dir: str (path), directory for experiment files I/O (write: images and log, read: responses)
         :param optimizer_name: str or iter of strs, see `defined_optimizers` in `Optimizers.py`
@@ -369,7 +560,7 @@ class EphysExperiment(ExperimentBase):
             Ellipsis means to return all channels
         :param nthreads: int, number of concurrent threads to run; default is 1
         :param nchannels_per_thread: int, offset added to ichannels for successive threads; not needed if nthreads == 1
-        :param mat_dir: str (path), directory for reading .mat file responses; default is project_dir
+        :param score_dir: str (path), directory for reading .mat file responses; default is project_dir
         :param log_dir: str (path), directory for saving experiment logs; default is project_dir/backup
         :param image_size: int, size in pixels to which to resize all images; default is to leave unchanged
         :param reps: int, number of times to show each image
@@ -377,16 +568,6 @@ class EphysExperiment(ExperimentBase):
             number of images to write each time before waiting for responses
             default is however many images there are to show each step
         :param scorer_parameters: dict, kwargs passed when initializing the scorer; default is empty
-        :param natural_stimuli_dir: str (path)
-            directory containing "natural"/reference images to show
-            interleaved with synthetic stimuli during the experiment
-            default is to not show natural images
-        :param n_natural_stimuli: int, number of natural images to show per step; default is not to show
-        :param save_natural_stimuli_copy: bool
-            make a copy in log_dir of natural images shown; default is to not use
-            do not use; will not save new images if natural stimuli are changed
-        :param cycle_natural_stimuli: bool
-            cycle through images in natural_stimuli_dir, refreshing each step
         :param random_seed: int
             when set, the experiment will have deterministic behavior; default is an arbitrary integer
         :param config_file_path: str (path),
@@ -394,8 +575,8 @@ class EphysExperiment(ExperimentBase):
             intended for saving a copy of it as part of the log
             default is to not save any file
         """
-        assert os.path.isdir(project_dir), 'project directory %s is not a valid directory' % project_dir
-        assert mat_dir is None or os.path.isdir(mat_dir), 'mat file directory %s is not a valid directory' % mat_dir
+        assert os.path.isdir(project_dir), f'project directory is not a valid directory: {project_dir}'
+        assert score_dir is None or os.path.isdir(score_dir), f'mat file directory  is not a valid directory: {score_dir}'
         if log_dir is None:
             log_dir = os.path.join(project_dir, 'backup')
         if scorer_parameters is None:
@@ -419,29 +600,27 @@ class EphysExperiment(ExperimentBase):
             for thread in range(nthreads):
                 ichannels_new.append(thread * nchannels_per_thread + (np.arange(nchannels_per_thread))[ichannels])
             ichannels = ichannels_new
-            print('%s: listening on the following channel(s) for each thread' % self.__class__.__name__)
+            print(f'{self.__class__.__name__}: listening on the following channel(s) for each thread')
             for thread in range(nthreads):
-                print('\tthread %d: %s' % (thread, str(ichannels[thread])))
+                print(f'\tthread {thread}: {ichannels[thread]}')
         else:
-            print('%s: listening on the following channel(s): %s' % (self.__class__.__name__, str(ichannels)))
+            print(f'{self.__class__.__name__}: listening on the following channel(s): {ichannels}')
 
         scorer_name = 'ephys'
         for param, val in zip(('write_dir', 'log_dir', 'channel'), (project_dir, log_dir, ichannels)):
             if param not in scorer_parameters.keys():
                 scorer_parameters[param] = val
-        for param, val in zip(('mat_dir', 'image_size', 'reps', 'block_size'), (mat_dir, image_size, reps, block_size)):
+        for param, val in zip(('score_dir', 'image_size', 'reps', 'block_size'), (score_dir, image_size, reps, block_size)):
             if val is not None:
                 scorer_parameters[param] = val
-        super(EphysExperiment, self).__init__(
+        super().__init__(
             log_dir=log_dir, optimizer_name=optimizer_name, optimizer_parameters=optimizer_parameters,
             scorer_name=scorer_name, scorer_parameters=scorer_parameters,
-            natural_stimuli_dir=natural_stimuli_dir, n_natural_stimuli=n_natural_stimuli,
-            save_natural_stimuli_copy=save_natural_stimuli_copy,
+            ref_images_loader_parameters=ref_images_loader_parameters, cycle_reference_images=cycle_reference_images,
             nthreads=nthreads, random_seed=random_seed, config_file_path=config_file_path
         )
 
         self._imsize = self._scorer.parameters['image_size']
-        self._cycle_natstim = bool(cycle_natural_stimuli)
 
     def run(self):
         """ Main experiment loop """
@@ -451,7 +630,7 @@ class EphysExperiment(ExperimentBase):
 
         try:
             while True:
-                print('\n>>> step %d' % self.istep)
+                print(f'\n>>> step {self.istep:d}')
                 t00 = time()
 
                 # before scoring, backup codes (optimizer)
@@ -462,7 +641,7 @@ class EphysExperiment(ExperimentBase):
                 t01 = time()
 
                 # get scores of images:
-                #    1) combine synthesized & natural images
+                #    1) combine synthesized & reference images
                 #    2) write images to disk for evaluation; also, copy them to backup
                 #    3) wait for & read results
                 syn_nimgs = 0
@@ -474,9 +653,9 @@ class EphysExperiment(ExperimentBase):
                     syn_sections.append(syn_nimgs)
                     syn_images += optimizer.current_images
                     syn_image_ids += optimizer.current_image_ids
-                if self.natural_stimuli is not None:
-                    combined_scores = \
-                        self.scorer.score(syn_images + self.natural_stimuli, syn_image_ids + self.natural_stimuli_ids)
+                if self.reference_images:
+                    combined_scores = self.scorer.score(syn_images + self.reference_images,
+                                                        syn_image_ids + self.reference_image_ids)
                 else:
                     combined_scores = self.scorer.score(syn_images, syn_image_ids)
                 t1 = time()
@@ -487,34 +666,33 @@ class EphysExperiment(ExperimentBase):
 
                 # use results to update optimizer
                 threads_synscores = []
-                threads_natscores = []
+                threads_refscores = []
                 for i, optimizer in enumerate(self.optimizers):
                     thread_synscores = combined_scores[syn_sections[i]:syn_sections[i + 1], i]
-                    thread_natscores = combined_scores[syn_nimgs:, i]
+                    thread_refscores = combined_scores[syn_nimgs:, i]
                     if len(thread_synscores.shape) > 1:  # if scores for list of channels returned, pool channels
                         thread_synscores = np.mean(thread_synscores, axis=-1)
-                        thread_natscores = np.mean(thread_natscores, axis=-1)  # unused by optimizer but used in summary
+                        thread_refscores = np.mean(thread_refscores, axis=-1)  # unused by optimizer but used in summary
                     threads_synscores.append(thread_synscores)
-                    threads_natscores.append(thread_natscores)
+                    threads_refscores.append(thread_refscores)
                     optimizer.step(thread_synscores)  # update optimizer
                 t3 = time()
 
                 # summarize scores & delays, & save log
                 for thread in range(self._nthreads):
                     if not self._nthreads == 1:
-                        print('thread %d: ' % thread)
-                    print('synthetic img scores: mean {}, all {}'.
-                          format(np.nanmean(threads_synscores[thread]), threads_synscores[thread]))
-                    print('natural image scores: mean {}, all {}'.
-                          format(np.nanmean(threads_natscores[thread]), threads_natscores[thread]))
-                print(('step %d time: total %.2fs | ' +
-                       'wait for results %.2fs  optimizer update %.2fs  write records %.2fs')
-                      % (self.istep, t3 - t00, t1 - t01, t3 - t2, t2 - t1 + t01 - t00))
+                        print(f'thread {thread:d}: ')
+                    print(f'synthetic img scores: mean {np.nanmean(threads_synscores[thread], axis=0)}, '
+                          f'all {threads_synscores[thread]}')
+                    print('reference image scores: mean {}, all {}'.
+                          format(np.nanmean(threads_refscores[thread], axis=0), threads_refscores[thread]))
+                print(f'step {self.istep:d} time: total {t3 - t00:.2f}s | ' +
+                      f'wait for results {t1 - t01:.2f}s  optimizer update {t3 - t2:.2f}s  '
+                      f'write records {t2 - t1 + t01 - t00:.2f}s')
                 self.logger.flush()
 
-                # refresh natural stimuli being shown
-                if self._cycle_natstim:
-                    self.refresh_natural_stimuli()
+                # refresh reference images being shown
+                self.check_refresh_ref_ims()
 
                 self.istep += 1
 
@@ -522,13 +700,13 @@ class EphysExperiment(ExperimentBase):
         except KeyboardInterrupt:
             print()
             print('... keyboard interrupt')
-            print('stopped at step %d <<<\n\n' % self.istep)
+            print(f'stopped at step {self.istep:d} <<<\n\n')
             self.logger.stop()
 
     @property
     def parameters(self):
         """ Returns dict storing parameters defining the experiment """
-        params = super(EphysExperiment, self).parameters
+        params = super().parameters
         params.update({'ichannels': self._ichannels_input, 'nchannels_per_thread': self._nchannels_per_thread})
         return params
 
@@ -539,10 +717,11 @@ class CNNExperiment(ExperimentBase):
     """
     def __init__(self, project_dir, optimizer_name, optimizer_parameters, target_neuron, with_write,
                  image_size=None, stochastic=None, stochastic_random_seed=None, reps=None, scorer_parameters=None,
-                 natural_stimuli_dir=None, n_natural_stimuli=None, save_natural_stimuli_copy=False,
-                 random_seed=None, config_file_path=None, max_optimize_images=None, max_steps=None,
+                 ref_images_loader_parameters=None, cycle_reference_images=False, random_seed=None, config_file_path=None,
+                 max_optimize_images=None, max_optimize_steps=None,
                  write_codes=False, write_last_codes=False, write_best_last_code=True,
-                 write_last_images=False, write_best_last_image=True):
+                 write_last_images=False, write_best_last_image=True, save_init=False,
+                 wait_each_step=None):
         """
         :param project_dir: str (path), directory for experiment files [I/]O
         :param optimizer_name: str or iter of strs, see `defined_optimizers` in `Optimizers.py`
@@ -563,14 +742,6 @@ class CNNExperiment(ExperimentBase):
             number of stochastic scores to produce for the same image
             only meaningful if stochastic == True
         :param scorer_parameters: dict, kwargs passed when initializing the scorer; default is empty
-        :param natural_stimuli_dir: str (path)
-            directory containing "natural"/reference images to show
-            interleaved with synthetic stimuli during the experiment
-            default is to not show natural images
-        :param n_natural_stimuli: int, number of natural images to show per step; default is not to show
-        :param save_natural_stimuli_copy: bool
-            make a copy in log_dir of natural images shown; default is to not use
-            do not use; will not save new images if natural stimuli are changed
         :param random_seed: int
             when set, the experiment will have deterministic behavior; default is an arbitrary integer
         :param config_file_path: str (path),
@@ -579,7 +750,7 @@ class CNNExperiment(ExperimentBase):
             default is to not save any file
         :param max_optimize_images: int
             max number of images to show; default is not set (experiment must be interrupted manually)
-        :param max_steps: int
+        :param max_optimize_steps: int
             max number of steps to run; superseded by `max_images`; default is not set
         :param write_codes: bool, whether to save codes each step
         :param write_last_codes: bool, whether to save codes at the last step
@@ -587,7 +758,7 @@ class CNNExperiment(ExperimentBase):
         :param write_last_images: bool, whether to save the images at the last step
         :param write_best_last_image: bool, whether to save the best image at the last step
         """
-        assert os.path.isdir(project_dir), 'project directory %s is not a valid directory' % project_dir
+        assert os.path.isdir(project_dir), f'project directory is not a valid directory: {project_dir}'
         if scorer_parameters is None:
             scorer_parameters = {}
         else:
@@ -618,12 +789,16 @@ class CNNExperiment(ExperimentBase):
         ):
             if param not in scorer_parameters.keys() and val is not None:
                 scorer_parameters[param] = val
+        if 'save_init' not in optimizer_parameters.keys():
+            optimizer_parameters['save_init'] = bool(save_init)
+        if wait_each_step is not None:
+            wait_each_step = float(wait_each_step)
+            assert wait_each_step >= 0
 
-        super(CNNExperiment, self).__init__(
+        super().__init__(
             log_dir=log_dir, optimizer_name=optimizer_name, optimizer_parameters=optimizer_parameters,
             scorer_name=scorer_name, scorer_parameters=scorer_parameters,
-            natural_stimuli_dir=natural_stimuli_dir, n_natural_stimuli=n_natural_stimuli,
-            save_natural_stimuli_copy=save_natural_stimuli_copy,
+            ref_images_loader_parameters=ref_images_loader_parameters, cycle_reference_images=cycle_reference_images,
             nthreads=1, random_seed=random_seed, config_file_path=config_file_path
         )
 
@@ -634,13 +809,14 @@ class CNNExperiment(ExperimentBase):
             else:
                 self._max_steps = int(max_optimize_images / self.optimizer.n_samples)
             self._max_steps = max(1, self._max_steps)
-        elif max_steps is not None:
-            self._max_steps = max(1, int(max_steps))
+        elif max_optimize_steps is not None:
+            self._max_steps = max(1, int(max_optimize_steps))
         else:
             self._max_steps = None
+        self._wait_each_step = wait_each_step
 
     def _load_nets(self):
-        super(CNNExperiment, self)._load_nets()
+        super()._load_nets()
         self.scorer.load_classifier()
 
     def run(self):
@@ -651,31 +827,38 @@ class CNNExperiment(ExperimentBase):
 
         try:
             while self._max_steps is None or self.istep < self._max_steps:
-                print('\n>>> step %d' % self.istep)
+                print(f'\n>>> step {self.istep:d}')
                 last_codes = self.optimizer.current_samples_copy
                 last_images = self.optimizer.current_images
                 last_imgids = self.optimizer.current_image_ids
                 last_scores = None
                 t0 = time()
 
-                # if any natural images to show, show all at the first step
-                if self.istep == 0 and self._n_natstim_to_show > 0:
+                if not self._cycle_refim_flags and self.istep == 0 and self.reference_images:
                     # score images
-                    natscores = self.scorer.score(self.natural_stimuli, self.natural_stimuli_ids)
+                    refscores = self.scorer.score(self.reference_images, self.reference_image_ids)
                     t1 = time()
                     # backup scores
                     self.scorer.save_current_scores()
                     t2 = time()
                     # summarize scores & delays
-                    print('natural image scores: mean {}, all {}'.format(np.nanmean(natscores), natscores))
-                    print('step %d time: total %.2fs | wait for results %.2fs  write records %.2fs'
-                          % (self.istep, t2 - t0, t1 - t0, t2 - t1))
+                    print(f'reference image scores: mean {np.nanmean(refscores)}, all {refscores}')
+                    print(f'step {self.istep:d} time: total {t2 - t0:.2f}s | wait for results {t1 - t0:.2f}s  '
+                          f'write records {t2 - t1:.2f}s')
 
                 else:
                     # score images
-                    synscores = self.scorer.score(self.optimizer.current_images, self.optimizer.current_image_ids)
+                    syn_images = self.optimizer.current_images
+                    syn_image_ids = self.optimizer.current_image_ids
+                    if self.reference_images:
+                        combined_scores = self.scorer.score(syn_images + self.reference_images,
+                                                            syn_image_ids + self.reference_image_ids)
+                        refscores = combined_scores[self.optimizer.nsamples:]
+                    else:
+                        combined_scores = self.scorer.score(syn_images, syn_image_ids)
+                    synscores = combined_scores[:self.optimizer.nsamples]
                     t1 = time()
-                    # before update, backup codes and scores
+                    # before update, backup codes (optimizer) and scores (scorer)
                     if self._write_codes:
                         self.optimizer.save_current_codes()
                         if hasattr(self.optimizer, 'save_current_genealogy'):
@@ -687,20 +870,27 @@ class CNNExperiment(ExperimentBase):
                     self.optimizer.step(synscores)
                     t3 = time()
                     # summarize scores & delays
-                    print('synthetic img scores: mean {}, all {}'.format(np.nanmean(synscores), synscores))
-                    print(('step %d time: total %.2fs | ' +
-                           'wait for results %.2fs  write records %.2fs  optimizer update %.2fs')
-                          % (self.istep, t3 - t0, t1 - t0, t2 - t1, t3 - t2))
+                    print(f'synthetic img scores: mean {np.nanmean(synscores, axis=0)}, all {synscores}')
+                    if self.reference_images:
+                        print(f'reference image scores: mean {np.nanmean(refscores, axis=0)}, all {refscores}')
+                    print(f'step {self.istep:d} time: total {t3 - t0:.2f}s | ' +
+                          f'wait for results {t1 - t0:.2f}s  write records {t2 - t1:.2f}s  '
+                          f'optimizer update {t3 - t2:.2f}s')
+
+                    # refresh reference images being shown
+                    self.check_refresh_ref_ims()
 
                 self.logger.flush()
                 self.istep += 1
+                if self._wait_each_step:
+                    sleep(self._wait_each_step)
             print('\nfinished <<<\n\n')
 
         # gracefully exit
         except KeyboardInterrupt:
             print()
             print('... keyboard interrupt')
-            print('stopped at step %d <<<\n\n' % self.istep)
+            print(f'stopped at step {self.istep:d} <<<\n\n')
 
         # save final results when stopped
         try:
@@ -724,6 +914,6 @@ class CNNExperiment(ExperimentBase):
     @property
     def parameters(self):
         """ Returns dict storing parameters defining the experiment """
-        params = super(CNNExperiment, self).parameters
-        params.update({'max_steps': self._max_steps})
+        params = super().parameters
+        params.update({'max_optimize_steps': self._max_steps})
         return params
