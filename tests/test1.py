@@ -1,4 +1,6 @@
 """
+Tests optimizing a few layers in AlexNet/CaffeNet
+    with DeePSiM-fc6 and genetic optimizer
 Running time (approx.; steps == 200)
 - n_units == 1 (default): 3 mins (GTX 2080); 6 mins (GTX 1060)
 - n_units == None (uses all 25): 2 hrs (GTX 2080); 5 hrs (GTX 1060)
@@ -28,17 +30,16 @@ exp_settings = {
         'mutation_size': 0.5,
         'selectivity': 2,
         'heritability': 0.5,
-        'n_conserve': 0
-    },
+        'n_conserve': 0},
     'scorer_parameters': {'engine': engine},
     'image_size': 85,
     'with_write': False,
     'max_optimize_steps': steps,
     'random_seed': 0,
     'stochastic': False,
-    'config_file_path': __file__,
-}
+    'config_file_path': __file__}
 t0 = time()
+
 
 # load target neurons
 with h5.File('test_data/target_neurons.h5', 'r') as f:
@@ -49,9 +50,9 @@ with h5.File('test_data/target_neurons.h5', 'r') as f:
 
 
 # specify initialization (for reproducibility)
-with h5.File('test_data/stats_caffenet_fc6.h5', 'r') as f:
-    mu = f['mu'][()]
-    sig = f['sig'][()]
+with h5.File('test_data/stats_caffenet.h5', 'r') as f:
+    mu = f['fc6/mu'][()]
+    sig = f['fc6/sig'][()]
 init_randgen = np.random.RandomState(init_rand_seed)
 pop_size = exp_settings['optimizer_parameters']['population_size']
 init_codes = init_randgen.normal(mu, sig, size=(pop_size, *mu.shape))
@@ -108,14 +109,15 @@ for layer, units in zip(target_layers, target_units):
               f'{init_acts.mean():>4.1f} -> {evo_acts.mean():>5.1f}')
 print(f'took time: {time() - t0:.0f} s')
 
+
 """
 results (n_units == 1):
 >>> cuda 10.1.243, python 3.7.5, Ubuntu 19.10
     >>> torch 1.3.1
-        alexnet features.3: 	 2.3 -> 102.9
-        alexnet features.8: 	 0.1 ->  44.6
-        alexnet classifier.1:	 0.0 ->  26.1
-        alexnet classifier.6:	 2.7 ->  41.6
+        alexnet features.3: 	 2.3 ->  94.2
+        alexnet features.8: 	 0.1 ->  39.7
+        alexnet classifier.1:	 0.0 ->  23.9
+        alexnet classifier.6:	 2.7 ->  36.6
     >>> caffe
         caffenet conv2:     	38.2 -> 246.9
         caffenet conv4:     	36.0 -> 213.1
@@ -123,10 +125,10 @@ results (n_units == 1):
         caffenet fc8:       	 5.5 ->  43.3
 >>> cuda 9.0, python 3.7.1 (anaconda), Windows 10
     >>> torch 1.0.1
-        alexnet features.3: 	 2.3 -> 108.8
-        alexnet features.8: 	 0.1 ->  49.5
-        alexnet classifier.1:	 0.0 ->  20.7
-        alexnet classifier.6:	 2.7 ->  39.2
+        alexnet features.3: 	 2.3 -> 111.7
+        alexnet features.8: 	 0.1 ->  40.2
+        alexnet classifier.1:	 0.0 ->  19.0
+        alexnet classifier.6:	 2.7 ->  44.1
     >>> caffe
         caffenet conv2:     	38.2 -> 224.3
         caffenet conv4:     	36.0 -> 226.1
