@@ -307,7 +307,7 @@ class ExperimentBase:
         if not os.path.isdir(log_dir):
             os.mkdir(log_dir)
         if isinstance(optimizer_name, str):
-            assert optimizer_name in Optimizers.defined_optimizers
+            assert optimizer_name.lower() in Optimizers.defined_optimizers
             optimizer_names = tuple([optimizer_name for _ in range(nthreads)])
         else:
             assert hasattr(optimizer_name, '__iter__')

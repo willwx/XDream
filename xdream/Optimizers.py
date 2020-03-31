@@ -579,6 +579,15 @@ class FDGD(Optimizer):
         if self._generator.loaded:
             self._prepare_images()
 
+    def set_initialization(self, sample):
+        assert self._istep == 0, 'can only change initialization at the beginning'
+        assert sample.shape == self._curr_center.shape, \
+            f'initialization should be shape {self._curr_center.shape}; ' \
+            f'got {sample.shape}'
+        self._curr_center = sample.copy()
+        self._best_code = self._curr_center.copy()
+        self._prepare_next_samples()
+
     def _load_init_code(self, initcodedir, copy=True):
         # make sure we are at the beginning of experiment
         assert self._istep == 0, 'initialization only allowed at the beginning'
@@ -647,7 +656,213 @@ class FDGD(Optimizer):
         return params
 
 
-get_optimizer = {'genetic': Genetic, 'fdgd': FDGD}
+class NES(Optimizer):
+    """
+    Implemented based on Ilyas et al., 2017
+    """
+    def __init__(self, generator_name, log_dir, n_samples, search_radius, learning_rate, antithetic=True,
+                 min_search_radius=0.01, search_radius_learning_rate=0, learn_search_radius_eltwise=False,
+                 random_seed=None, thread=None, initial_codes_dir=None, save_init=True, save_search_radius_every=100,
+                 generator_parameters=None, load_on_init=True):
+        """
+        :param generator_name: str, see `defined_generators` in `Generators.py`
+        :param log_dir: str (path), directory to which to write backup codes & other log files
+        :param n_samples: int (>= 1), number of samples per step; rounded down to an even integer if antithetic == True
+        :param search_radius: float (> 0), scale of search around the current center
+        :param learning_rate: float (> 0), size of gradient descent step
+        :param antithetic: bool
+            whether to use antithetic sampling; see Ilyas et al. 2018: https://arxiv.org/abs/1804.08598
+        :param random_seed: int
+            when set, the optimizer will have deterministic behavior,
+            producing identical results given identical calls to `step()`
+            default is an arbitrary integer
+        :param thread: int
+            uniquely identifies concurrent opitmizers to avoid sample ID and backup filename clashes
+            default is to assume no concurrent threads
+        :param initial_codes_dir: str (path)
+            directory containing code (.npy) files; a random one will be drawn as the initial center
+            default is to initialize with zeros
+        :param save_init: bool, whether to save a copy of the initial codes; only used if using initial_codes_dir
+        :param generator_parameters: dict, kwargs passed when initializing the generator
+        """
+        super().__init__(generator_name, log_dir, random_seed, thread,
+                         generator_parameters, load_on_init)
+        if antithetic:
+            assert n_samples > 1, 'n_samples must be at least 2 if antithetic'
+        else:
+            assert n_samples > 0, 'n_samples must be at least 1'
+        search_radius = np.array(search_radius).flatten()
+        assert np.prod(search_radius.shape) in (1, np.prod(self._code_shape)), \
+            f'search_radius must be a scalar or the same size as code_shape {self._code_shape}; '\
+            f'got shape of {search_radius.shape}'
+        min_search_radius = np.array(min_search_radius, dtype=float).flatten()
+        assert min_search_radius.shape == search_radius.shape
+        if initial_codes_dir is not None:
+            assert os.path.isdir(initial_codes_dir), f'initial_codes_dir is not a valid directory: {initial_codes_dir}'
+
+        # optimizer parameters
+        self._init_r = search_radius
+        self._min_r = min_search_radius
+        self._r = np.clip(self._init_r, self._min_r, None)
+        self._lr = float(learning_rate)
+        self._antithetic = bool(antithetic)
+        if self._antithetic:
+            self._n_indep_samps = int(n_samples) // 2
+            self._nsamps = self._n_indep_samps * 2
+            if int(n_samples) % 2 == 1:
+                print('FDGD: due to antithetic sampling, actual n_samples will be', self._nsamps)
+        else:
+            self._n_indep_samps = self._nsamps = int(n_samples)
+        assert self._nsamps > 0
+        if search_radius_learning_rate is None or search_radius_learning_rate <= 0:
+            self._learn_r = False
+            self._rlr = None
+            self._save_rlr_every = None
+        else:
+            self._learn_r = True
+            self._rlr = float(search_radius_learning_rate)
+            if learn_search_radius_eltwise and len(self._r) == 1:
+                self._r = np.repeat(self._r, np.prod(self._code_shape))
+            self._save_rlr_every = None
+            try:
+                if save_search_radius_every >= 1:
+                    self._save_rlr_every = int(save_search_radius_every)
+            except TypeError:
+                pass
+        self._r_eltwise = len(self._r) > 1
+
+        if initial_codes_dir is None:
+            self._curr_center = np.zeros(self._code_shape)
+        else:
+            self._load_init_code(initial_codes_dir, save_init)
+        self._pos_steps = None
+        self._curr_std_steps = None
+        self._best_code = self._curr_center.copy()
+        self._best_score = None
+        self._init_codefn = None
+
+        self._prepare_next_samples()
+
+    def _prepare_next_samples(self):
+        pos_std_steps = self._random_generator.normal(size=(self._n_indep_samps, np.prod(self._code_shape)))
+        self._pos_steps = pos_std_steps * self._r
+
+        pos_samples = self._curr_center + self._pos_steps.reshape(-1, *self._code_shape)
+        if self._antithetic:
+            neg_samples = self._curr_center - self._pos_steps.reshape(-1, *self._code_shape)
+            self._curr_samples = np.concatenate((pos_samples, neg_samples))
+            self._curr_std_steps = np.concatenate((pos_std_steps, -pos_std_steps))
+        else:
+            self._curr_samples = pos_samples
+            self._curr_std_steps = pos_std_steps
+
+        self._curr_sample_idc = range(self._next_sample_idx, self._next_sample_idx + len(self._curr_samples))
+        self._next_sample_idx += len(self._curr_samples)
+        if self._thread is None:
+            self._curr_sample_ids = [f'gen{self._istep:03d}_{idx:06d}' for idx in self._curr_sample_idc]
+        else:
+            self._curr_sample_ids = [f'thread{self._thread:02d}_gen{self._istep:03d}_{idx:06d}'
+                                     for idx in self._curr_sample_idc]
+        if self._generator.loaded:
+            self._prepare_images()
+
+    def set_initialization(self, sample):
+        assert self._istep == 0, 'can only change initialization at the beginning'
+        assert sample.shape == self._curr_center.shape, \
+            f'initialization should be shape {self._curr_center.shape}; ' \
+            f'got {sample.shape}'
+        self._curr_center = sample.copy()
+        self._best_code = self._curr_center.copy()
+        self._prepare_next_samples()
+
+    def _load_init_code(self, initcodedir, copy=True):
+        # make sure we are at the beginning of experiment
+        assert self._istep == 0, 'initialization only allowed at the beginning'
+        init_code, init_codefns = utils.load_codes2(initcodedir, 1, self._random_generator)
+        self._curr_center = init_code.reshape(self._code_shape)
+        self._init_codefn = init_codefns[0]
+        self._best_code = self._curr_center.copy()
+        if copy:
+            self._copy_init_code()
+
+    def _copy_init_code(self):
+        if self._init_codefn is None:
+            print('NES: init code is default (all zero); not saved')
+        else:
+            savedir = os.path.join(self._logdir, 'init_code')
+            try:
+                os.mkdir(savedir)
+            except OSError as e:
+                if e.errno == 17:
+                    raise OSError(f'trying to save init population but directory already exists:', savedir)
+                else:
+                    raise
+            utils.write_codes([self._curr_center], [self._init_codefn], savedir)
+
+    def step(self, scores):
+        assert len(scores) == len(self._curr_samples), \
+            f'number of scores ({len(scores)}) != number of samples ({len(self._curr_samples)})'
+        scores = np.array(scores)
+
+        # update center
+        grad = np.mean(scores.reshape(-1, 1) * self._curr_std_steps, axis=0) / self._r
+        self._curr_center += (self._lr * grad).reshape(self._code_shape)
+
+        # optionally, update search radius
+        # (covariance and its update are currently not supported)
+        if self._learn_r:
+            grad_r_samps = scores.reshape(-1, 1) * (self._curr_std_steps ** 2 - 1)
+            if self._r_eltwise:
+                grad_r = np.mean(grad_r_samps, axis=0) / self._r
+                self._r += (self._rlr * grad_r).reshape(self._code_shape)
+            else:
+                grad_r = np.mean(grad_r_samps) / self._r
+                self._r += self._rlr * grad_r
+            self._r = np.clip(self._r, self._min_r, None)
+
+        score_argmax = np.argsort(scores)[-1]
+        if self._best_score is None or self._best_score < scores[score_argmax]:
+            self._best_score = scores[score_argmax]
+            self._best_code = self._curr_samples[score_argmax]
+
+        self._istep += 1
+        self._prepare_next_samples()
+
+    def save_current_state(self, save_dir=None, **kwargs):
+        """
+        Saves current samples, images, and optionally search_radius to disk
+        """
+        super().save_current_state(save_dir, **kwargs)
+        if self._save_rlr_every and self.istep % self._save_rlr_every == 0:
+            thread_prefix = f'thread{self._thread:02d}_' if self._thread is not None else ''
+            fname = f'{thread_prefix}gen{self._istep:03d}_search_radius'
+            np.save(os.path.join(self._logdir, fname), self._r)
+
+    @property
+    def generation(self):
+        return self._istep
+
+    @property
+    def n_samples(self):
+        return self._nsamps
+
+    @property
+    def current_average_sample(self):
+        return self._curr_center.copy()
+
+    @property
+    def parameters(self):
+        params = super().parameters
+        params.update({'n_samples': self._nsamps,
+                       'init_search_radius': self._init_r, 'search_radius': self._r, 'min_search_radius': self._min_r,
+                       'learning_rate': self._lr, 'antithetic': self._antithetic})
+        if self._learn_r:
+            params.update({'search_radius_learning_rate': self._rlr, 'save_search_radius_every': self._save_rlr_every,
+                           'learn_search_radius_eltwise': self._r_eltwise})
+        return params
+
+
+get_optimizer = {'genetic': Genetic, 'fdgd': FDGD, 'nes': NES}
 defined_optimizers = tuple(get_optimizer.keys())
 
 

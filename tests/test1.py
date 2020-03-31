@@ -111,6 +111,8 @@ print(f'took time: {time() - t0:.0f} s')
 
 
 """
+Note: for unclear reasons, torch results are slightly different
+  on different runs; caffe results are consistent.
 results (n_units == 1):
 >>> cuda 10.1.243, python 3.7.5, Ubuntu 19.10
     >>> torch 1.3.1
