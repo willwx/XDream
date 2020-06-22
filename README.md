@@ -129,3 +129,10 @@ Some additional tools are included for creating
 the initial generation of codes (for genetic algorithm) and
 empirically optimizing hyperparameters.
 
+
+## Change log
+- Restructure repository
+- Add data and plotting code
+    (characterizing performance in simulated experiments
+    with CNNs)
+- Clean up code
