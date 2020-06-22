@@ -2,10 +2,14 @@ Preprint available at https://www.biorxiv.org/content/10.1101/516484v1
 
 Journal paper available at https://www.cell.com/cell/fulltext/S0092-8674(19)30391-5
 
+Technical paper describing extensive (in silico) tests at https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1007973
+
 Update (19/4/3): Added rudimentary support for PyTorch.
     See below for details.
 
 Update (19/5/10): PyTorch can now be used instead of caffe.
+
+Update (merged 20/6/22): Restructured repository; added generators, optimizers, tests, and simulation data
 
 ## Introduction
 XDream (E**x**tending **D**eepDream with **r**eal-time **e**volution
