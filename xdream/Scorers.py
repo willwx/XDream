@@ -431,7 +431,7 @@ class WithIOScorer(Scorer):
             t2 = time()
 
             scores, scores_local_idx, novel_imgfns = self._with_io_get_scores()
-            if self._score_shape == () and len(scores) > 0:    # if score_shape is the initial placeholder
+            if self._score_shape == (-1,) and len(scores) > 0:    # if score_shape is the initial placeholder
                 self._score_shape = scores[0].shape
                 self._curr_cumuscores = np.zeros((nimgs, *self._score_shape), dtype='float')
             for score, idx in zip(scores, scores_local_idx):
