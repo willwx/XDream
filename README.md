@@ -92,7 +92,7 @@ image parameterization (e.g.,
 - Pretrained generative networks.
     The DeepSiM generators have been converted into pytorch from caffe. 
     They are defined in `torch_nets/deepsim.py`, and the weights are available
-    [here](https://drive.google.com/open?id=1sV54kv5VXvtx4om1c9kBPbdlNuurkGFi).
+    [here](https://drive.google.com/drive/folders/1bDWEe1Awu-8HaIGzAOaglqxxgzpBBvle).
     
     The original caffe models can be downloaded from
     [here](https://lmb.informatik.uni-freiburg.de/people/dosovits/code.html).
